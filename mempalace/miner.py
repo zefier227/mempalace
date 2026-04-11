@@ -8,6 +8,7 @@ Stores verbatim chunks as drawers. No summaries. Ever.
 """
 
 import os
+import sys
 import hashlib
 import fnmatch
 from pathlib import Path
@@ -271,12 +272,16 @@ def load_config(project_dir: str) -> dict:
         if legacy_path.exists():
             config_path = legacy_path
         else:
+            wing_name = resolved_project_dir.name
             print(
                 f"  No mempalace.yaml found in {resolved_project_dir} "
-                "— using auto-detected defaults"
+                f"— using auto-detected defaults (wing='{wing_name}'). "
+                "Directories with the same basename will share a wing; "
+                "add mempalace.yaml to disambiguate.",
+                file=sys.stderr,
             )
             return {
-                "wing": resolved_project_dir.name,
+                "wing": wing_name,
                 "rooms": [
                     {
                         "name": "general",
