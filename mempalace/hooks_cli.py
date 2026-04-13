@@ -65,7 +65,11 @@ def _validate_transcript_path(transcript_path: str) -> Path:
 def _count_human_messages(transcript_path: str) -> int:
     """Count human messages in a JSONL transcript, skipping command-messages."""
     path = _validate_transcript_path(transcript_path)
-    if path is None or not path.is_file():
+    if path is None:
+        if transcript_path:
+            _log(f"WARNING: transcript_path rejected by validator: {transcript_path!r}")
+        return 0
+    if not path.is_file():
         return 0
     count = 0
     try:

@@ -462,6 +462,27 @@ def test_count_rejects_traversal_path():
     assert _count_human_messages("../../etc/passwd") == 0
 
 
+def test_count_logs_warning_on_rejected_path(tmp_path):
+    """_count_human_messages should log a warning when a non-empty path is rejected."""
+    with patch("mempalace.hooks_cli.STATE_DIR", tmp_path):
+        with patch("mempalace.hooks_cli._log") as mock_log:
+            _count_human_messages("../../etc/passwd")
+    mock_log.assert_called_once()
+    assert "rejected" in mock_log.call_args[0][0].lower()
+
+
+def test_validate_transcript_accepts_platform_native_path(tmp_path):
+    """Validator accepts platform-native paths (backslashes on Windows, slashes on Unix)."""
+    session_file = tmp_path / "projects" / "abc123" / "session.jsonl"
+    session_file.parent.mkdir(parents=True)
+    session_file.touch()
+    # Use the OS-native string representation (backslashes on Windows)
+    result = _validate_transcript_path(str(session_file))
+    assert result is not None
+    assert result.suffix == ".jsonl"
+    assert result.is_file()
+
+
 def test_stop_hook_rejects_injected_stop_hook_active(tmp_path):
     """stop_hook_active with shell injection string should not cause issues."""
     transcript = tmp_path / "t.jsonl"
