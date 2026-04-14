@@ -99,9 +99,10 @@ class KnowledgeGraph:
 
     def close(self):
         """Close the database connection."""
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
+        with self._lock:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
 
     def _entity_id(self, name: str) -> str:
         return name.lower().replace(" ", "_").replace("'", "")
