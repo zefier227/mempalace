@@ -1,5 +1,5 @@
 > [!CAUTION]
-> **SCAM ALERT:** MemPalace does **not** have an official website. Any site claiming to be MemPalace (including .tech, .io, or .com, etc. domains) is fake and likely contains malware.
+> **SCAM ALERT:** The only official sources for MemPalace are this [GitHub repository](https://github.com/MemPalace/mempalace), the [PyPI package](https://pypi.org/project/mempalace/), and the docs site at **mempalaceofficial.com**. Any other domain claiming to be MemPalace — including `mempalace.tech` — is an impostor and may distribute malware. Never run install scripts from unofficial sites.
 
 <div align="center">
 
@@ -91,7 +91,7 @@ Other memory systems try to fix this by letting AI decide what's worth rememberi
 
 Several Community Members (#267, #326, #506) have pointed out there are fake MemPalace websites popping up, including ones with Malware.
 
-To be super clear, MemPalace *has no website* (at least for now), so anything claiming to be one is false.
+The only official MemPalace surfaces are this [GitHub repository](https://github.com/MemPalace/mempalace), the [PyPI package](https://pypi.org/project/mempalace/), and the docs site at [mempalaceofficial.com](https://mempalaceofficial.com). Any other domain — `mempalace.tech` being the one most commonly reported — is not ours.
 
 Thanks to our Community Members for letting us know about the problem.
 
