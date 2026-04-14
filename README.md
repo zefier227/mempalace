@@ -1,3 +1,6 @@
+> [!CAUTION]
+> **SCAM ALERT:** MemPalace does **not** have an official website. Any site claiming to be MemPalace (including .tech, .io, or .com, etc. domains) is fake and likely contains malware.
+
 <div align="center">
 
 <img src="assets/mempalace_logo.png" alt="MemPalace" width="280">
