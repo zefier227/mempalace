@@ -30,7 +30,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .config import MempalaceConfig, sanitize_name, sanitize_content
+from .config import MempalaceConfig, sanitize_kg_value, sanitize_name, sanitize_content
 from .version import __version__
 from .backends.chroma import ChromaBackend, ChromaCollection
 from .query_sanitizer import sanitize_query
@@ -810,7 +810,7 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
 def tool_kg_query(entity: str, as_of: str = None, direction: str = "both"):
     """Query the knowledge graph for an entity's relationships."""
     try:
-        entity = sanitize_name(entity, "entity")
+        entity = sanitize_kg_value(entity, "entity")
     except ValueError as e:
         return {"error": str(e)}
     if direction not in ("outgoing", "incoming", "both"):
@@ -824,9 +824,9 @@ def tool_kg_add(
 ):
     """Add a relationship to the knowledge graph."""
     try:
-        subject = sanitize_name(subject, "subject")
+        subject = sanitize_kg_value(subject, "subject")
         predicate = sanitize_name(predicate, "predicate")
-        object = sanitize_name(object, "object")
+        object = sanitize_kg_value(object, "object")
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
@@ -849,9 +849,9 @@ def tool_kg_add(
 def tool_kg_invalidate(subject: str, predicate: str, object: str, ended: str = None):
     """Mark a fact as no longer true (set end date)."""
     try:
-        subject = sanitize_name(subject, "subject")
+        subject = sanitize_kg_value(subject, "subject")
         predicate = sanitize_name(predicate, "predicate")
-        object = sanitize_name(object, "object")
+        object = sanitize_kg_value(object, "object")
     except ValueError as e:
         return {"success": False, "error": str(e)}
     _wal_log(
@@ -870,7 +870,7 @@ def tool_kg_timeline(entity: str = None):
     """Get chronological timeline of facts, optionally for one entity."""
     if entity is not None:
         try:
-            entity = sanitize_name(entity, "entity")
+            entity = sanitize_kg_value(entity, "entity")
         except ValueError as e:
             return {"error": str(e)}
     results = _kg.timeline(entity)
