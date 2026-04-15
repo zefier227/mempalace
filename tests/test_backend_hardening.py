@@ -705,6 +705,163 @@ class TestParseMineLineEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# 6. Warm-client regression: search/status -> mine -> immediate search/status
+# ---------------------------------------------------------------------------
+
+
+class TestWarmClientRegression:
+    """Regression suite for the stale-ChromaDB-client scenario.
+
+    Scenario tested:
+        1. Open a fresh MemPalaceAdapter on an empty palace → search returns
+           ok=False (no palace) and status returns ok=False.
+        2. Mine a project into the palace via the adapter.
+        3. Immediately search and call status in the same process — must see
+           the new drawers WITHOUT creating a new adapter instance.
+
+    This exercises the full warm-client path:
+        - search_memories / get_collection reads from _DEFAULT_BACKEND._clients
+        - run_mine_projects() launches subprocess, then calls
+          _invalidate_chroma_client() which pops the cached client
+        - next get_collection() call creates a fresh PersistentClient
+
+    If _invalidate_chroma_client() regresses, search will return 0 hits
+    even though the mine just reported drawers_filed >= 1.
+    """
+
+    def test_search_before_mine_returns_error(self, isolated_palace):
+        """Pre-condition: searching an empty palace returns ok=False."""
+        adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
+        result = adapter.run_search("anything")
+        assert result.ok is False
+        assert result.error is not None
+
+    def test_status_before_mine_returns_error(self, isolated_palace):
+        """Pre-condition: status on an empty palace returns ok=False."""
+        adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
+        status = adapter.run_status()
+        assert status.ok is False
+        assert status.error is not None
+
+    def test_warm_client_search_after_mine(self, isolated_palace, simple_project):
+        """Core regression: same adapter instance must find drawers after mine.
+
+        Step-by-step:
+          1. Create adapter (empty palace → no client in cache yet).
+          2. Trigger a failed search to warm the cache with a missing-collection
+             path (FileNotFoundError from get_collection). This simulates the
+             GUI opening before any mine has been run.
+          3. Mine the project. _invalidate_chroma_client() evicts any cache.
+          4. Search immediately — must find drawers.
+        """
+        adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
+
+        # Step 2: warm call that fails (palace not yet mined)
+        pre_search = adapter.run_search("GraphQL")
+        assert pre_search.ok is False  # expected — nothing mined yet
+
+        # Step 3: mine
+        mine_result = adapter.run_mine_projects(str(simple_project))
+        assert mine_result.ok, f"Mine failed: {mine_result.error}"
+        assert mine_result.drawers_filed >= 1
+
+        # Step 4: immediate search in the same process
+        post_search = adapter.run_search("GraphQL REST decision")
+        assert post_search.ok, f"Post-mine search failed: {post_search.error}"
+        assert len(post_search.hits) >= 1, (
+            "Zero hits immediately after mine — warm-client eviction failed. "
+            "_invalidate_chroma_client() did not evict the stale client or "
+            "search_memories() is reading from a snapshot taken before mine."
+        )
+
+    def test_warm_client_status_after_mine(self, isolated_palace, simple_project):
+        """Status must reflect new drawers immediately after mine on same adapter."""
+        adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
+
+        # Warm the adapter with a failing status call
+        pre_status = adapter.run_status()
+        assert pre_status.ok is False
+
+        # Mine
+        mine_result = adapter.run_mine_projects(str(simple_project))
+        assert mine_result.ok
+
+        # Immediate status on same adapter
+        post_status = adapter.run_status()
+        assert post_status.ok, f"Post-mine status failed: {post_status.error}"
+        assert post_status.total_drawers >= 1, (
+            "total_drawers=0 immediately after mine — stale client in "
+            "run_status() path (uses get_collection from _DEFAULT_BACKEND)."
+        )
+        assert len(post_status.wings) >= 1
+
+    def test_warm_client_double_mine_search(self, isolated_palace, tmp_path):
+        """Two sequential mines; search must see content from both."""
+        proj1_parent = tmp_path / "p1"
+        proj1_parent.mkdir()
+        proj1 = _make_project(proj1_parent, files={
+            "alpha.md": (
+                "Alpha project: distributed tracing with Jaeger and OpenTelemetry.\n"
+                "We use Jaeger for end-to-end request tracing across microservices.\n"
+            )
+        })
+
+        proj2_parent = tmp_path / "p2"
+        proj2_parent.mkdir()
+        proj2 = _make_project(proj2_parent, files={
+            "beta.md": (
+                "Beta project: service mesh with Istio and Envoy sidecar proxy.\n"
+                "Istio manages traffic, security, and observability for Kubernetes.\n"
+            )
+        })
+        (proj2 / "mempalace.yaml").write_text(
+            "wing: beta\nrooms:\n  - name: gen\n    description: gen\n    keywords: [gen]\n"
+        )
+
+        adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
+
+        r1 = adapter.run_mine_projects(str(proj1))
+        assert r1.ok, f"First mine failed: {r1.error}"
+
+        r2 = adapter.run_mine_projects(str(proj2))
+        assert r2.ok, f"Second mine failed: {r2.error}"
+
+        # Both projects must be searchable after second mine
+        s1 = adapter.run_search("Jaeger tracing")
+        assert s1.ok and len(s1.hits) >= 1, (
+            "First project content not found after second mine — "
+            "double-mine invalidation issue."
+        )
+
+        s2 = adapter.run_search("Istio Envoy service mesh")
+        assert s2.ok and len(s2.hits) >= 1, (
+            "Second project content not found after second mine."
+        )
+
+    def test_enriched_fields_populated_after_warm_mine(self, isolated_palace, simple_project):
+        """SearchHit enriched fields must be present after warm-client mine cycle."""
+        adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
+        # Warm with failing search
+        adapter.run_search("anything")
+        # Mine
+        adapter.run_mine_projects(str(simple_project))
+        # Search
+        result = adapter.run_search("GraphQL database")
+        assert result.ok and result.hits
+
+        hit = result.hits[0]
+        # source_path: must be non-empty absolute path
+        assert hit.source_path, "source_path empty after warm mine cycle"
+        assert os.path.isabs(hit.source_path), f"source_path not absolute: {hit.source_path!r}"
+        # drawer_id: must be non-empty string
+        assert hit.drawer_id, "drawer_id empty after warm mine cycle"
+        # chunk_index: must be an int
+        assert isinstance(hit.chunk_index, int), (
+            f"chunk_index is {type(hit.chunk_index).__name__}, expected int"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
