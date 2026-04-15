@@ -331,6 +331,9 @@ def search_memories(
         dkwargs = {
             "query_texts": [query],
             "n_results": n_results * 3,  # over-fetch for re-ranking
+            # Include "ids" so we can populate drawer_id in each hit without
+            # a second round-trip.  ChromaDB always returns IDs; we just make
+            # the request explicit so the field is present in the result dict.
             "include": ["documents", "metadatas", "distances"],
         }
         if where:
@@ -370,11 +373,15 @@ def search_memories(
     CLOSET_RANK_BOOSTS = [0.40, 0.25, 0.15, 0.08, 0.04]
     CLOSET_DISTANCE_CAP = 1.5  # cosine dist > 1.5 = too weak to use as signal
 
+    # ChromaDB query() always returns "ids" in the result dict (it's the PK).
+    drawer_ids_raw = drawer_results.get("ids", [[]])[0]
+
     scored: list = []
-    for doc, meta, dist in zip(
+    for doc, meta, dist, did in zip(
         drawer_results["documents"][0],
         drawer_results["metadatas"][0],
         drawer_results["distances"][0],
+        drawer_ids_raw,
     ):
         # Filter on raw distance before rounding to avoid precision loss.
         if max_distance > 0.0 and dist > max_distance:
@@ -402,10 +409,13 @@ def search_memories(
             "effective_distance": round(effective_dist, 4),
             "closet_boost": round(boost, 3),
             "matched_via": matched_via,
+            # drawer_id: stable ChromaDB document ID. Empty string on failure.
+            "drawer_id": did or "",
             # Internal: retain the full source_file path + chunk_index so the
-            # enrichment step below doesn't have to reverse-lookup via
-            # basename-suffix matching (which silently collides when two
-            # files share a basename across different directories).
+            # promotion step at the bottom of this function can surface them as
+            # source_path / chunk_index without a reverse-lookup from basename.
+            # (basename-suffix matching silently collides when two files share
+            # a basename across different directories.)
             "_sort_key": effective_dist,
             "_source_file_full": source,
             "_chunk_index": meta.get("chunk_index"),
@@ -474,10 +484,26 @@ def search_memories(
 
     # BM25 hybrid re-rank within the final candidate set.
     hits = _hybrid_rank(hits, query)
+
+    # Promote internal fields to public GUI-useful fields before stripping.
+    # These were retained through the pipeline under underscore names to
+    # avoid aliasing with the public "source_file" (basename) field.
     for h in hits:
         h.pop("_sort_key", None)
-        h.pop("_source_file_full", None)
-        h.pop("_chunk_index", None)
+        # source_path: full absolute path (stable for "open in editor" action).
+        # If the caller is the MCP server it can ignore this; the GUI adapter
+        # uses it directly instead of the expensive reverse-lookup from basename.
+        full = h.pop("_source_file_full", None) or ""
+        h.setdefault("source_path", full)
+        # chunk_index: zero-based chunk position within the source file.
+        ci = h.pop("_chunk_index", None)
+        h.setdefault("chunk_index", ci)
+        # drawer_id: filled in by the adapter/caller that has access to the
+        # ChromaDB IDs returned by .query(); searcher doesn't have them here
+        # because ChromaDB's query() doesn't return IDs by default.
+        # We keep the key in the dict with an empty sentinel so callers know
+        # the field exists and can fill it if they request IDs separately.
+        h.setdefault("drawer_id", "")
 
     return {
         "query": query,
