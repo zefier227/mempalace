@@ -2868,7 +2868,9 @@ def llm_rerank(
                     raw = (msg.get("reasoning") or "").strip()
             else:
                 raw = result["content"][0]["text"].strip()
-            m = re.search(r"\b(\d+)\b", raw[::-1])  # take LAST integer (rerank models often reason first)
+            m = re.search(
+                r"\b(\d+)\b", raw[::-1]
+            )  # take LAST integer (rerank models often reason first)
             if m:
                 pick = int(m.group(1)[::-1])
                 if 1 <= pick <= len(candidates):
