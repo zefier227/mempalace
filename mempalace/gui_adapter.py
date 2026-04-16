@@ -241,10 +241,54 @@ class SearchHit:
 
 
 @dataclass
+class SearchFileGroup:
+    """Aggregated search result for one source file.
+
+    Groups chunk-level SearchHit entries by source_path so the GUI can
+    display one representative entry per file instead of N near-identical
+    rows for the same file.
+    """
+    source_path: str
+    source_file: str
+    best_hit: SearchHit
+    extra_hits: List[SearchHit] = field(default_factory=list)
+
+    @property
+    def all_hits(self) -> List[SearchHit]:
+        return [self.best_hit] + self.extra_hits
+
+    @property
+    def hit_count(self) -> int:
+        return 1 + len(self.extra_hits)
+
+    def snippet(self, max_len: int = 80) -> str:
+        first_line = ""
+        for line in self.best_hit.text.splitlines():
+            stripped = line.strip()
+            if stripped:
+                first_line = stripped
+                break
+        if len(first_line) > max_len:
+            first_line = first_line[:max_len - 3] + "..."
+        return first_line
+
+    def location_label(self) -> str:
+        hit = self.best_hit
+        if hit.line_start is not None and hit.line_end is not None:
+            if hit.line_start == hit.line_end:
+                return f"L{hit.line_start}"
+            return f"L{hit.line_start}–{hit.line_end}"
+        if hit.chunk_index is not None:
+            return f"chunk {hit.chunk_index}"
+        return ""
+
+
+@dataclass
 class SearchResult:
     ok: bool
     query: str = ""
     hits: List[SearchHit] = field(default_factory=list)
+    groups: List[SearchFileGroup] = field(default_factory=list)
     total_candidates: int = 0
     error: Optional[str] = None
 
@@ -697,10 +741,12 @@ class MemPalaceAdapter:
 
         hits = [SearchHit.from_dict(h) for h in enriched]
         self._compute_line_ranges(hits)
+        groups = self._aggregate_hits(hits)
         return SearchResult(
             ok=True,
             query=raw.get("query", query),
             hits=hits,
+            groups=groups,
             total_candidates=raw.get("total_before_filter", len(hits)),
         )
 
@@ -786,6 +832,50 @@ class MemPalaceAdapter:
                         break
             except Exception:
                 pass
+
+    @staticmethod
+    def _aggregate_hits(hits: List[SearchHit]) -> List[SearchFileGroup]:
+        """Group chunk-level hits by source_path, keeping the best per file.
+
+        The backend returns one SearchHit per chunk (drawer).  When a file
+        has been split into many chunks, those hits appear as near-identical
+        rows in the GUI — same filename, similar text.  This method groups
+        them so the GUI can display one representative entry per file.
+
+        Rules:
+          * Hits are grouped by source_path (empty source_path → one group
+            per hit, no merging).
+          * Within each group, hits are sorted by similarity descending;
+            the first (highest-similarity) hit becomes best_hit.
+          * Groups are returned in the order of the best hit's original
+            position — i.e. if the first 3 raw hits all belong to file A,
+            file A's group is first.
+          * If a file has only one hit, extra_hits is empty.
+        """
+        if not hits:
+            return []
+
+        by_path: dict = {}
+        order: list = []
+        for hit in hits:
+            key = hit.source_path or f"__no_path__{id(hit)}"
+            if key not in by_path:
+                by_path[key] = []
+                order.append(key)
+            by_path[key].append(hit)
+
+        groups: List[SearchFileGroup] = []
+        for key in order:
+            file_hits = sorted(by_path[key], key=lambda h: h.similarity, reverse=True)
+            best = file_hits[0]
+            extras = file_hits[1:]
+            groups.append(SearchFileGroup(
+                source_path=best.source_path,
+                source_file=best.source_file or "?",
+                best_hit=best,
+                extra_hits=extras,
+            ))
+        return groups
 
     # ------------------------------------------------------------------
     # run_status — captures stdout, returns structured PalaceStatus

@@ -52,6 +52,7 @@ from mempalace.gui_adapter import (
     MineProgressEvent,
     MineResult,
     PalaceStatus,
+    SearchFileGroup,
     SearchResult,
     SearchHit,
 )
@@ -425,7 +426,7 @@ class SearchPanel(QWidget):
     def __init__(self, controller: QtController, parent=None):
         super().__init__(parent)
         self._ctrl = controller
-        self._hits: List[SearchHit] = []
+        self._groups: List[SearchFileGroup] = []
         self._last_query: str = ""
         self._last_wing: Optional[str] = None
         self._last_n_results: int = 50
@@ -516,6 +517,23 @@ class SearchPanel(QWidget):
         self._preview.setFont(_MONO)
         right_layout.addWidget(self._preview)
 
+        # Chunk navigation inside a file group
+        chunk_nav = QHBoxLayout()
+        self._chunk_nav_lbl = QLabel("")
+        self._chunk_nav_lbl.setStyleSheet("color: #666; font-size: 11px;")
+        chunk_nav.addWidget(self._chunk_nav_lbl)
+        self._prev_chunk_btn = QPushButton("◀ Prev chunk")
+        self._prev_chunk_btn.setFixedHeight(24)
+        self._prev_chunk_btn.setVisible(False)
+        self._prev_chunk_btn.clicked.connect(self._on_prev_chunk)
+        chunk_nav.addWidget(self._prev_chunk_btn)
+        self._next_chunk_btn = QPushButton("Next chunk ▶")
+        self._next_chunk_btn.setFixedHeight(24)
+        self._next_chunk_btn.setVisible(False)
+        self._next_chunk_btn.clicked.connect(self._on_next_chunk)
+        chunk_nav.addWidget(self._next_chunk_btn)
+        right_layout.addLayout(chunk_nav)
+
         # Meta below preview
         self._meta_lbl = QLabel("")
         self._meta_lbl.setWordWrap(True)
@@ -546,7 +564,10 @@ class SearchPanel(QWidget):
         self._results_list.clear()
         self._preview.clear()
         self._meta_lbl.clear()
-        self._hits = []
+        self._chunk_nav_lbl.clear()
+        self._prev_chunk_btn.setVisible(False)
+        self._next_chunk_btn.setVisible(False)
+        self._groups = []
         self._result_count_lbl.setText("No results")
         self._show_more_btn.setVisible(False)
         self._empty_lbl.setVisible(True)
@@ -595,7 +616,10 @@ class SearchPanel(QWidget):
         self._results_list.clear()
         self._preview.clear()
         self._meta_lbl.clear()
-        self._hits = []
+        self._chunk_nav_lbl.clear()
+        self._prev_chunk_btn.setVisible(False)
+        self._next_chunk_btn.setVisible(False)
+        self._groups = []
 
         if not result.ok:
             self._result_count_lbl.setText("Search error")
@@ -608,11 +632,11 @@ class SearchPanel(QWidget):
             self._empty_lbl.setVisible(True)
             return
 
-        self._hits = result.hits
-        count = len(result.hits)
-        total = result.total_candidates
+        self._groups = result.groups
+        total_hits = len(result.hits)
+        file_count = len(self._groups)
 
-        if count == 0:
+        if file_count == 0:
             self._result_count_lbl.setText("No results")
             self._show_more_btn.setVisible(False)
             self._empty_lbl.setText(
@@ -623,41 +647,57 @@ class SearchPanel(QWidget):
             return
 
         total_str = ""
-        has_more = total and total > count
+        has_more = result.total_candidates and result.total_candidates > total_hits
         if has_more:
-            total_str = f"  (from {total} candidates)"
+            total_str = f"  (from {result.total_candidates} candidates)"
+        extra_chunks = total_hits - file_count
+        file_label = f"{file_count} file{'s' if file_count != 1 else ''}"
+        chunk_info = f", {total_hits} chunks" if extra_chunks > 0 else ""
         self._result_count_lbl.setText(
-            f"{count} result{'s' if count != 1 else ''}{total_str}"
+            f"{file_label}{chunk_info}{total_str}"
         )
         self._show_more_btn.setVisible(bool(has_more))
         self._empty_lbl.setVisible(False)
 
-        for i, hit in enumerate(result.hits):
-            snippet = hit.text[:80].replace("\n", " ")
-            if len(hit.text) > 80:
-                snippet += "..."
+        for i, group in enumerate(self._groups):
+            hit = group.best_hit
+            snippet = group.snippet(70)
+            loc = group.location_label()
             sim_str = f"{hit.similarity:.2f}" if hit.similarity is not None else "n/a"
-            label = (
-                f"[{i + 1}] {hit.wing}/{hit.room}"
-                f"  |  {hit.source_file}"
-                f"  |  sim={sim_str}"
-            )
+
+            label = f"[{i + 1}] {group.source_file}"
+            if loc:
+                label += f"  |  {loc}"
+            label += f"  |  sim={sim_str}\n    {snippet}"
+            if group.hit_count > 1:
+                label += f"\n    +{len(group.extra_hits)} more chunk{'s' if len(group.extra_hits) != 1 else ''} in this file"
+
             item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, i)
             self._results_list.addItem(item)
 
         self._results_list.setCurrentRow(0)
 
     @Slot(int)
     def _on_result_selected(self, row: int):
-        if row < 0 or row >= len(self._hits):
+        if row < 0 or row >= len(self._groups):
             return
-        hit = self._hits[row]
+        self._show_group(row, chunk_index=0)
+
+    def _show_group(self, group_row: int, chunk_index: int = 0):
+        if group_row < 0 or group_row >= len(self._groups):
+            return
+        group = self._groups[group_row]
+        hits = group.all_hits
+        if chunk_index < 0 or chunk_index >= len(hits):
+            chunk_index = 0
+        hit = hits[chunk_index]
         self._preview.setPlainText(hit.text)
 
         meta_parts = [
             f"Wing: {hit.wing}",
             f"Room: {hit.room}",
-            f"File: {hit.source_file}",
+            f"File: {group.source_file}",
         ]
         if hit.line_start is not None and hit.line_end is not None:
             if hit.line_start == hit.line_end:
@@ -668,13 +708,44 @@ class SearchPanel(QWidget):
             meta_parts.append(f"Chunk: {hit.chunk_index}")
         if hit.similarity is not None:
             meta_parts.append(f"Similarity: {hit.similarity:.3f}")
-        if hit.matched_via:
-            meta_parts.append(f"Match via: {hit.matched_via}")
         if hit.source_path:
             meta_parts.append(f"Path: {hit.source_path}")
         if hit.drawer_id:
             meta_parts.append(f"Drawer: {hit.drawer_id}")
         self._meta_lbl.setText("  |  ".join(meta_parts))
+
+        if len(hits) > 1:
+            self._chunk_nav_lbl.setText(
+                f"Chunk {chunk_index + 1} of {len(hits)} in {group.source_file}"
+            )
+            self._prev_chunk_btn.setVisible(chunk_index > 0)
+            self._next_chunk_btn.setVisible(chunk_index < len(hits) - 1)
+            self._prev_chunk_btn.setEnabled(chunk_index > 0)
+            self._next_chunk_btn.setEnabled(chunk_index < len(hits) - 1)
+        else:
+            self._chunk_nav_lbl.clear()
+            self._prev_chunk_btn.setVisible(False)
+            self._next_chunk_btn.setVisible(False)
+
+        self._groups[group_row]._active_chunk = chunk_index
+
+    def _on_prev_chunk(self):
+        row = self._results_list.currentRow()
+        if row < 0 or row >= len(self._groups):
+            return
+        group = self._groups[row]
+        cur = getattr(group, "_active_chunk", 0)
+        if cur > 0:
+            self._show_group(row, cur - 1)
+
+    def _on_next_chunk(self):
+        row = self._results_list.currentRow()
+        if row < 0 or row >= len(self._groups):
+            return
+        group = self._groups[row]
+        cur = getattr(group, "_active_chunk", 0)
+        if cur < len(group.all_hits) - 1:
+            self._show_group(row, cur + 1)
 
     @Slot(bool)
     def _on_busy(self, busy: bool):

@@ -34,7 +34,9 @@ import pytest
 from mempalace.gui_adapter import (
     MemPalaceAdapter,
     MineProgressEvent,
+    SearchFileGroup,
     SearchResult,
+    SearchHit,
     PalaceStatus,
     InitResult,
     McpServerStatus,
@@ -884,3 +886,173 @@ class TestLineRangeInSearchHits:
         for hit in result.hits:
             if hit.line_start is None:
                 assert hit.chunk_index is not None or hit.source_path == ""
+
+
+# ---------------------------------------------------------------------------
+# 15. Search result aggregation / dedupe
+# ---------------------------------------------------------------------------
+
+
+class TestSearchAggregation:
+    """SearchFileGroup must aggregate chunk hits by source file."""
+
+    def test_single_file_multiple_chunks_grouped(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(tmp_project))
+        result = adapter.run_search("project", n_results=50)
+        assert result.ok
+        assert len(result.groups) >= 1
+        source_paths = [g.source_path for g in result.groups]
+        assert len(source_paths) == len(set(source_paths)), (
+            f"Duplicate source_path in groups: {source_paths}"
+        )
+
+    def test_two_different_files_both_shown(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(tmp_project))
+        result = adapter.run_search("architecture database GraphQL", n_results=50)
+        assert result.ok
+        assert len(result.groups) >= 2
+
+    def test_group_best_hit_is_highest_similarity(self, adapter_mined):
+        result = adapter_mined.run_search("GraphQL", n_results=50)
+        assert result.ok
+        for group in result.groups:
+            for extra in group.extra_hits:
+                assert group.best_hit.similarity >= extra.similarity, (
+                    f"best_hit sim={group.best_hit.similarity} < "
+                    f"extra sim={extra.similarity} for {group.source_file}"
+                )
+
+    def test_extra_hits_count_correct(self, adapter_mined):
+        result = adapter_mined.run_search("project", n_results=50)
+        assert result.ok
+        for group in result.groups:
+            assert group.hit_count == 1 + len(group.extra_hits)
+
+    def test_groups_field_populated(self, adapter_mined):
+        result = adapter_mined.run_search("GraphQL")
+        assert result.ok
+        assert len(result.groups) >= 1
+        assert isinstance(result.groups[0], SearchFileGroup)
+
+    def test_empty_search_returns_empty_groups(self, adapter_mined):
+        result = adapter_mined.run_search(
+            "zzzzxkcd_unique_no_match_99999", max_distance=0.01,
+        )
+        assert result.ok
+        assert len(result.groups) == 0
+
+    def test_group_snippet_nonempty(self, adapter_mined):
+        result = adapter_mined.run_search("GraphQL")
+        assert result.ok
+        for group in result.groups:
+            snippet = group.snippet()
+            assert len(snippet) > 0
+
+    def test_group_location_label(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(tmp_project))
+        result = adapter.run_search("GraphQL")
+        assert result.ok
+        for group in result.groups:
+            label = group.location_label()
+            assert isinstance(label, str)
+
+    def test_new_query_clears_old_groups(self, adapter_mined):
+        r1 = adapter_mined.run_search("GraphQL")
+        r2 = adapter_mined.run_search("database")
+        assert r1.ok and r2.ok
+        assert r2.groups is not r1.groups
+
+
+class TestAggregateHitsUnit:
+    """Unit tests for _aggregate_hits without needing a palace."""
+
+    def test_aggregate_single_hit(self):
+        hits = [SearchHit(
+            text="hello world", wing="w", room="r",
+            source_file="a.py", source_path="/a.py",
+            similarity=0.9, distance=0.1,
+        )]
+        groups = MemPalaceAdapter._aggregate_hits(hits)
+        assert len(groups) == 1
+        assert groups[0].hit_count == 1
+        assert groups[0].extra_hits == []
+
+    def test_aggregate_same_path_dedupes(self):
+        hits = [
+            SearchHit(text="chunk 1", wing="w", room="r",
+                      source_file="a.py", source_path="/a.py",
+                      similarity=0.9, distance=0.1),
+            SearchHit(text="chunk 2", wing="w", room="r",
+                      source_file="a.py", source_path="/a.py",
+                      similarity=0.7, distance=0.3),
+        ]
+        groups = MemPalaceAdapter._aggregate_hits(hits)
+        assert len(groups) == 1
+        assert groups[0].hit_count == 2
+        assert groups[0].best_hit.text == "chunk 1"
+        assert len(groups[0].extra_hits) == 1
+        assert groups[0].extra_hits[0].text == "chunk 2"
+
+    def test_aggregate_different_paths_separate(self):
+        hits = [
+            SearchHit(text="from a", wing="w", room="r",
+                      source_file="a.py", source_path="/a.py",
+                      similarity=0.9, distance=0.1),
+            SearchHit(text="from b", wing="w", room="r",
+                      source_file="b.py", source_path="/b.py",
+                      similarity=0.8, distance=0.2),
+        ]
+        groups = MemPalaceAdapter._aggregate_hits(hits)
+        assert len(groups) == 2
+        assert groups[0].source_path == "/a.py"
+        assert groups[1].source_path == "/b.py"
+
+    def test_aggregate_empty_input(self):
+        groups = MemPalaceAdapter._aggregate_hits([])
+        assert groups == []
+
+    def test_aggregate_preserves_order(self):
+        hits = [
+            SearchHit(text="first", wing="w", room="r",
+                      source_file="a.py", source_path="/a.py",
+                      similarity=0.9, distance=0.1),
+            SearchHit(text="second", wing="w", room="r",
+                      source_file="b.py", source_path="/b.py",
+                      similarity=0.8, distance=0.2),
+            SearchHit(text="third", wing="w", room="r",
+                      source_file="a.py", source_path="/a.py",
+                      similarity=0.7, distance=0.3),
+        ]
+        groups = MemPalaceAdapter._aggregate_hits(hits)
+        assert len(groups) == 2
+        assert groups[0].source_file == "a.py"
+        assert groups[0].hit_count == 2
+        assert groups[1].source_file == "b.py"
+
+    def test_group_snippet_method(self):
+        hit = SearchHit(
+            text="first line\nsecond line\n", wing="w", room="r",
+            source_file="a.py", source_path="/a.py",
+            similarity=0.9, distance=0.1,
+        )
+        group = SearchFileGroup(
+            source_path="/a.py", source_file="a.py",
+            best_hit=hit, extra_hits=[],
+        )
+        assert group.snippet() == "first line"
+
+    def test_group_location_label_with_lines(self):
+        hit = SearchHit(
+            text="text", wing="w", room="r",
+            source_file="a.py", source_path="/a.py",
+            similarity=0.9, distance=0.1,
+            line_start=10, line_end=15,
+        )
+        group = SearchFileGroup(
+            source_path="/a.py", source_file="a.py",
+            best_hit=hit, extra_hits=[],
+        )
+        assert group.location_label() == "L10–15"
