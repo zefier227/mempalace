@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -337,14 +338,18 @@ class StatusPanel(QWidget):
         self._palace_lbl = _label("Palace: --")
         self._chroma_lbl = _label("ChromaDB: --")
         self._drawers_lbl = _label("Total drawers: --")
+        self._files_lbl = _label("Total files: --")
         root.addWidget(self._palace_lbl)
         root.addWidget(self._chroma_lbl)
         root.addWidget(self._drawers_lbl)
+        root.addWidget(self._files_lbl)
 
         # Empty state
         self._empty_lbl = QLabel(
-            "Palace is initialised but not yet indexed.\n"
-            "Go to the Mine tab and mine a project to populate it."
+            "No data in palace yet.\n\n"
+            "1. Go to the Init tab and initialise the palace.\n"
+            "2. Go to the Mine tab and mine a project directory.\n"
+            "3. Come back here to see your indexed content."
         )
         self._empty_lbl.setAlignment(Qt.AlignCenter)
         self._empty_lbl.setStyleSheet("color: #888; padding: 30px;")
@@ -371,6 +376,7 @@ class StatusPanel(QWidget):
 
         if not status.ok or status.total_drawers == 0:
             self._drawers_lbl.setText("Total drawers: 0")
+            self._files_lbl.setText("Total files: 0")
             self._tree.setVisible(False)
             self._empty_lbl.setVisible(True)
             msg = status.error or "Initialised but not yet indexed."
@@ -380,6 +386,7 @@ class StatusPanel(QWidget):
             return
 
         self._drawers_lbl.setText(f"Total drawers: {status.total_drawers}")
+        self._files_lbl.setText(f"Total files: {status.total_files}")
         self._empty_lbl.setVisible(False)
         self._tree.setVisible(True)
         self._tree.clear()
@@ -411,6 +418,9 @@ class SearchPanel(QWidget):
         super().__init__(parent)
         self._ctrl = controller
         self._hits: List[SearchHit] = []
+        self._last_query: str = ""
+        self._last_wing: Optional[str] = None
+        self._last_n_results: int = 50
         self._build_ui()
 
     def _build_ui(self):
@@ -442,6 +452,17 @@ class SearchPanel(QWidget):
         filter_row.addWidget(self._wing_edit, 1)
         root.addLayout(filter_row)
 
+        # Max results row
+        max_row = QHBoxLayout()
+        max_row.addWidget(_label("Max results:"))
+        self._n_results_spin = QSpinBox()
+        self._n_results_spin.setRange(1, 500)
+        self._n_results_spin.setValue(50)
+        self._n_results_spin.setToolTip("Maximum number of search results to return")
+        max_row.addWidget(self._n_results_spin)
+        max_row.addStretch()
+        root.addLayout(max_row)
+
         # Splitter: results list | preview
         splitter = QSplitter(Qt.Horizontal)
 
@@ -454,6 +475,10 @@ class SearchPanel(QWidget):
         self._results_list = QListWidget()
         self._results_list.currentRowChanged.connect(self._on_result_selected)
         left_layout.addWidget(self._results_list)
+        self._show_more_btn = QPushButton("Show more...")
+        self._show_more_btn.setVisible(False)
+        self._show_more_btn.clicked.connect(self._on_show_more)
+        left_layout.addWidget(self._show_more_btn)
         splitter.addWidget(left)
 
         # Right: preview pane
@@ -479,7 +504,8 @@ class SearchPanel(QWidget):
         # Empty state
         self._empty_lbl = QLabel(
             "Type a query above and press Search.\n\n"
-            "If you see no results, make sure the palace has been mined."
+            "No results? Make sure the palace has been mined first.\n"
+            "Tip: increase 'Max results' if you want more matches."
         )
         self._empty_lbl.setAlignment(Qt.AlignCenter)
         self._empty_lbl.setStyleSheet("color: #888; padding: 30px;")
@@ -495,7 +521,22 @@ class SearchPanel(QWidget):
         if not q:
             return
         wing = self._wing_edit.text().strip() or None
-        self._ctrl.request_search(q, wing=wing)
+        n = self._n_results_spin.value()
+        self._last_query = q
+        self._last_wing = wing
+        self._last_n_results = n
+        self._ctrl.request_search(q, wing=wing, n_results=n)
+
+    def _on_show_more(self):
+        if not self._last_query:
+            return
+        self._last_n_results = min(self._last_n_results + 50, 500)
+        self._n_results_spin.setValue(self._last_n_results)
+        self._ctrl.request_search(
+            self._last_query,
+            wing=self._last_wing,
+            n_results=self._last_n_results,
+        )
 
     @Slot(object)
     def _on_search_done(self, result: SearchResult):
@@ -506,9 +547,11 @@ class SearchPanel(QWidget):
 
         if not result.ok:
             self._result_count_lbl.setText("Search error")
+            self._show_more_btn.setVisible(False)
             self._empty_lbl.setText(
                 f"Error: {result.error}\n\n"
-                "Make sure the palace has been initialised and mined."
+                "Make sure the palace has been initialised and mined.\n"
+                "Check the Init and Mine tabs first."
             )
             self._empty_lbl.setVisible(True)
             return
@@ -519,6 +562,7 @@ class SearchPanel(QWidget):
 
         if count == 0:
             self._result_count_lbl.setText("No results")
+            self._show_more_btn.setVisible(False)
             self._empty_lbl.setText(
                 f'No results for "{result.query}".\n\n'
                 "Try different keywords, or check that the relevant project has been mined."
@@ -527,11 +571,13 @@ class SearchPanel(QWidget):
             return
 
         total_str = ""
-        if total and total > count:
+        has_more = total and total > count
+        if has_more:
             total_str = f"  (from {total} candidates)"
         self._result_count_lbl.setText(
             f"{count} result{'s' if count != 1 else ''}{total_str}"
         )
+        self._show_more_btn.setVisible(bool(has_more))
         self._empty_lbl.setVisible(False)
 
         for i, hit in enumerate(result.hits):
@@ -589,7 +635,7 @@ class MainWindow(QMainWindow):
     def __init__(self, controller: QtController, parent=None):
         super().__init__(parent)
         self._ctrl = controller
-        self.setWindowTitle("MemPalace")
+        self.setWindowTitle(f"MemPalace — {controller.palace_path}")
         self.setMinimumSize(QSize(900, 650))
         self._build_ui()
         self._wire_signals()

@@ -244,6 +244,47 @@ class TestPanels:
         # At least query field + wing filter
         assert len(fields) >= 2
 
+    def test_search_panel_has_n_results_spinbox(self, qapp, tmp_palace):
+        from gui.main_window import SearchPanel
+        from PySide6.QtWidgets import QSpinBox
+        panel = SearchPanel(self._make_ctrl(qapp, tmp_palace))
+        spinboxes = panel.findChildren(QSpinBox)
+        assert len(spinboxes) >= 1
+        spin = spinboxes[0]
+        assert spin.value() == 50
+        assert spin.minimum() >= 1
+
+    def test_status_panel_has_file_count_label(self, qapp, tmp_palace):
+        from gui.main_window import StatusPanel
+        panel = StatusPanel(self._make_ctrl(qapp, tmp_palace))
+        labels = panel.findChildren(type(panel._files_lbl))
+        texts = [lbl.text() for lbl in labels]
+        assert any("Total files" in t for t in texts)
+
+    def test_window_title_shows_palace_path(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import MainWindow
+        ctrl = QtController(palace_path=tmp_palace)
+        win = MainWindow(controller=ctrl)
+        assert tmp_palace in win.windowTitle()
+
+    def test_search_panel_has_show_more_button(self, qapp, tmp_palace):
+        from gui.main_window import SearchPanel
+        from PySide6.QtWidgets import QPushButton
+        panel = SearchPanel(self._make_ctrl(qapp, tmp_palace))
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Show more" in lbl for lbl in labels)
+
+    def test_mine_done_uses_deferred_status(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        import inspect
+        src = inspect.getsource(QtController._on_mine_done)
+        assert "QTimer.singleShot" in src, (
+            "Post-mine status refresh must use QTimer.singleShot "
+            "to avoid busy-flag race"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 5. CLI arg parsing

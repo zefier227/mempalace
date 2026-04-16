@@ -55,7 +55,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Signal, Slot, QTimer
 
 from mempalace.gui_adapter import (
     MemPalaceAdapter,
@@ -258,7 +258,7 @@ class QtController(QObject):
         self,
         query: str,
         wing: Optional[str] = None,
-        n_results: int = 8,
+        n_results: int = 50,
     ) -> None:
         """Run a search (non-blocking). Ignores if busy."""
         if not query.strip():
@@ -292,8 +292,13 @@ class QtController(QObject):
         self.mine_finished.emit(result)
         # Auto-refresh status after a successful mine so the StatusPanel
         # updates without requiring a manual click.
+        # Use QTimer.singleShot so the status request is deferred until
+        # after the event loop processes mine_finished signals (including
+        # the tab switch in MainWindow).  This avoids a busy-flag race
+        # where request_status() would set busy=True before the
+        # mine_finished handlers have run.
         if result.ok:
-            self.request_status()
+            QTimer.singleShot(0, self.request_status)
 
     @Slot(object)
     def _on_status_done(self, result: PalaceStatus) -> None:

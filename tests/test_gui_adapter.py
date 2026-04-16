@@ -600,3 +600,157 @@ class TestThreadSafety:
             f"{q}: {r.error}" for q, r in zip(queries, results) if not r.ok
         ]
         assert len(results) == 5
+
+
+# ---------------------------------------------------------------------------
+# 10. Stabilization regression tests (file count / n_results bug)
+# ---------------------------------------------------------------------------
+
+
+class TestStatusFileCount:
+    """PalaceStatus.total_files must reflect the number of unique source files."""
+
+    def test_file_count_after_mine(self, adapter_mined):
+        status = adapter_mined.run_status()
+        assert status.ok
+        assert status.total_files >= 1
+        assert status.total_drawers >= status.total_files
+
+    def test_file_count_matches_unique_sources(self, adapter_mined):
+        status = adapter_mined.run_status()
+        assert status.ok
+        from mempalace.palace import get_collection
+        col = get_collection(adapter_mined.palace_path, create=False)
+        all_meta = []
+        offset = 0
+        total = col.count()
+        while offset < total:
+            batch = col.get(limit=1000, offset=offset, include=["metadatas"])
+            if not batch.get("metadatas"):
+                break
+            all_meta.extend(batch["metadatas"])
+            offset += len(batch["metadatas"])
+        unique_sources = len({m.get("source_file", "") for m in all_meta if m.get("source_file")})
+        assert status.total_files == unique_sources
+
+    def test_file_count_zero_when_no_palace(self, tmp_path):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_path / "empty"))
+        status = adapter.run_status()
+        assert status.ok is False
+        assert status.total_files == 0
+
+
+class TestSearchNResultsDefault:
+    """Search must not silently cap at 8 results — the old default."""
+
+    def test_adapter_default_n_results_is_not_8(self):
+        import inspect
+        from mempalace.gui_adapter import MemPalaceAdapter
+        sig = inspect.signature(MemPalaceAdapter.run_search)
+        n_results_default = sig.parameters["n_results"].default
+        assert n_results_default != 8, (
+            f"run_search default n_results is {n_results_default}, "
+            "expected != 8 to avoid the 'only 8 files' bug"
+        )
+
+    def test_qt_controller_default_n_results_is_not_8(self, qapp, tmp_palace):
+        import inspect
+        from gui.qt_controller import QtController
+        sig = inspect.signature(QtController.request_search)
+        n_results_default = sig.parameters["n_results"].default
+        assert n_results_default != 8, (
+            f"QtController.request_search default n_results is {n_results_default}, "
+            "expected != 8 to avoid the 'only 8 files' bug"
+        )
+
+    def test_search_respects_n_results(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(tmp_project))
+        result = adapter.run_search("project", n_results=50)
+        assert result.ok
+        assert len(result.hits) <= 50
+
+    def test_search_n_results_greater_than_8(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(tmp_project))
+        result = adapter.run_search("project", n_results=50)
+        assert result.ok
+        assert len(result.hits) <= 50
+        assert result.total_candidates >= 0
+
+
+# ---------------------------------------------------------------------------
+# 11. Interpreter consistency regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestInterpreterResolution:
+    """_resolve_python must return a usable interpreter path."""
+
+    def test_resolve_python_returns_string(self):
+        from mempalace.gui_adapter import _resolve_python
+        path = _resolve_python()
+        assert isinstance(path, str)
+        assert len(path) > 0
+
+    def test_resolve_python_not_xcode_cli_tools(self):
+        from mempalace.gui_adapter import _resolve_python
+        path = _resolve_python()
+        assert "/Library/Developer/CommandLineTools" not in path, (
+            f"Resolved to Xcode CLI tools stub: {path}"
+        )
+
+    def test_resolve_python_is_executable(self):
+        from mempalace.gui_adapter import _resolve_python
+        from os.path import isfile
+        from os import access, X_OK
+        path = _resolve_python()
+        assert isfile(path), f"Not a file: {path}"
+        assert access(path, X_OK), f"Not executable: {path}"
+
+    def test_resolve_python_has_mempalace(self):
+        from mempalace.gui_adapter import _resolve_python, MemPalaceAdapter
+        import subprocess
+        adapter = MemPalaceAdapter(palace_path="/tmp/test_resolve_python")
+        result = subprocess.run(
+            [_resolve_python(), "-c", "import mempalace; print('ok')"],
+            capture_output=True, text=True, timeout=10,
+            env=adapter._child_env(),
+        )
+        assert result.returncode == 0, (
+            f"Resolved Python cannot import mempalace:\n"
+            f"  path={_resolve_python()}\n  stderr={result.stderr}"
+        )
+
+    def test_resolve_python_has_chromadb(self):
+        from mempalace.gui_adapter import _resolve_python, MemPalaceAdapter
+        import subprocess
+        adapter = MemPalaceAdapter(palace_path="/tmp/test_resolve_python")
+        result = subprocess.run(
+            [_resolve_python(), "-c", "import chromadb; print('ok')"],
+            capture_output=True, text=True, timeout=10,
+            env=adapter._child_env(),
+        )
+        assert result.returncode == 0, (
+            f"Resolved Python cannot import chromadb:\n"
+            f"  path={_resolve_python()}\n  stderr={result.stderr}"
+        )
+
+
+class TestPostMineStatusRefresh:
+    """After mine succeeds, status must always be refreshable."""
+
+    def test_status_after_mine_with_invalidation(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        mine_result = adapter.run_mine_projects(str(tmp_project))
+        assert mine_result.ok, f"Mine failed: {mine_result.error}"
+        status = adapter.run_status()
+        assert status.ok
+        assert status.total_drawers >= 1
+
+    def test_search_after_mine_sees_fresh_data(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(tmp_project))
+        result = adapter.run_search("GraphQL")
+        assert result.ok
+        assert len(result.hits) >= 1

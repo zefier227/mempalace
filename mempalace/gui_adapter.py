@@ -80,6 +80,104 @@ logger = logging.getLogger("mempalace.gui_adapter")
 
 
 # ---------------------------------------------------------------------------
+# Interpreter resolution — ensures subprocess uses same env as parent
+# ---------------------------------------------------------------------------
+
+
+def _resolve_python() -> str:
+    """Return the path to the Python interpreter that should be used for
+    subprocess calls (mine, MCP server).
+
+    The problem this solves: ``sys.executable`` can resolve to a bare
+    ``/usr/bin/python3`` or the Xcode CLI tools Python
+    (``/Library/Developer/CommandLineTools/usr/bin/python3``) when the
+    GUI is launched via a ``.app`` bundle, a wrapper script, or
+    ``python -m gui.app`` under a venv whose ``python`` is a symlink.
+
+    Resolution strategy (first hit wins):
+      0. **.app bundle detection** — if ``sys.frozen`` is set and
+         ``sys.executable`` is inside an ``.app/Contents/MacOS/`` path,
+         locate the real Python interpreter inside the bundled
+         ``Python*.framework`` (py2app standalone mode).  The launcher
+         at ``Contents/MacOS/AppName`` is NOT a general-purpose Python
+         interpreter and cannot run ``-m`` flags.
+      1. ``sys.executable`` — if it is a real, executable file and is
+         *not* the Xcode CLI tools stub.  This covers normal venv usage.
+      2. ``sys._base_executable`` — CPython sets this to the venv's
+         underlying interpreter; it exists on macOS even when
+         ``sys.executable`` points to a shim.
+      3. ``shutil.which('python3')`` — fallback to PATH.
+
+    Returns an absolute path string.  Logs a warning if the result seems
+    dubious (e.g. Xcode CLI tools path).
+    """
+    import shutil
+
+    XCODE_CLI_TOOLS = "/Library/Developer/CommandLineTools"
+
+    def _is_good(path: str) -> bool:
+        if not path:
+            return False
+        p = Path(path)
+        if not p.is_file() or not os.access(path, os.X_OK):
+            return False
+        if XCODE_CLI_TOOLS in path:
+            logger.warning(
+                "Resolved Python is the Xcode CLI-tools stub (%s) — "
+                "likely missing site-packages. Attempting fallback.",
+                path,
+            )
+            return False
+        return True
+
+    # Step 0: py2app .app bundle — find the real Python in Frameworks/.
+    if getattr(sys, "frozen", False) and ".app/Contents/MacOS/" in sys.executable:
+        contents_dir = Path(sys.executable).resolve().parent.parent
+        frameworks_dir = contents_dir / "Frameworks"
+        if frameworks_dir.is_dir():
+            for fw in sorted(frameworks_dir.glob("Python*.framework")):
+                versions_dir = fw / "Versions"
+                if not versions_dir.is_dir():
+                    continue
+                for ver_dir in sorted(versions_dir.iterdir(), reverse=True):
+                    if not ver_dir.is_dir() or ver_dir.name == "Current":
+                        continue
+                    for py_name in (f"python3.{ver_dir.name}", "python3"):
+                        py_bin = ver_dir / "bin" / py_name
+                        if py_bin.is_file() and os.access(str(py_bin), os.X_OK):
+                            logger.debug(
+                                "Bundle Python interpreter: %s", py_bin
+                            )
+                            return str(py_bin)
+        macos_python = contents_dir / "MacOS" / "python"
+        if macos_python.is_file() and os.access(str(macos_python), os.X_OK):
+            logger.debug("Bundle Python interpreter (MacOS/python): %s", macos_python)
+            return str(macos_python)
+        logger.warning(
+            "Running inside .app bundle but could not find Python "
+            "interpreter in Frameworks/ — subprocesses may fail."
+        )
+
+    candidates = [sys.executable]
+    base = getattr(sys, "_base_executable", None)
+    if base:
+        candidates.append(base)
+    candidates.append(shutil.which("python3") or "")
+
+    for candidate in candidates:
+        if _is_good(candidate):
+            logger.debug("Resolved Python interpreter: %s", candidate)
+            return candidate
+
+    logger.warning(
+        "Could not resolve a suitable Python interpreter; "
+        "falling back to sys.executable=%s",
+        sys.executable,
+    )
+    return sys.executable
+
+
+# ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
 
@@ -164,6 +262,7 @@ class WingStatus:
 class PalaceStatus:
     ok: bool
     total_drawers: int = 0
+    total_files: int = 0
     wings: List[WingStatus] = field(default_factory=list)
     palace_path: str = ""
     chromadb_version: str = ""
@@ -422,13 +521,45 @@ class MemPalaceAdapter:
         Does NOT mutate os.environ.  palace_path is forwarded via
         MEMPALACE_PALACE_PATH so child processes that read config before
         parsing --palace see the right value.
+
+        PYTHONPATH is extended with the parent's ``sys.path`` so that a
+        child subprocess using a different (or system) Python interpreter
+        can still find packages installed in the parent's environment
+        (e.g. ``pip install --user`` chromadb into
+        ``~/Library/Python/3.X/lib/python/site-packages``).
+
+        Inside a .app bundle:
+
+        * ``PYTHONHOME`` is set to the bundle's Resources directory so
+          the ``python`` binary in ``Contents/MacOS/`` can find its
+          standard library and site-packages.  Without this, the
+          subprocess python falls back to the system Python's prefix.
+        * The inherited ``PYTHONPATH`` from the parent environment is
+          replaced (not extended) with only the bundle's ``sys.path``
+          entries.  This prevents stale development-environment paths
+          from leaking into the subprocess and shadowing the bundled
+          packages.
         """
         env = os.environ.copy()
         env["MEMPALACE_PALACE_PATH"] = self._palace_path
         env["PYTHONUNBUFFERED"] = "1"
-        # Signal to child that a GUI is driving it (reserved for future
-        # structured output support — not yet consumed by mine/search).
         env["MEMPALACE_GUI_PROGRESS"] = "1"
+        parent_paths = [p for p in sys.path if p]
+        if not parent_paths:
+            if extra:
+                env.update(extra)
+            return env
+        in_bundle = getattr(sys, "frozen", False) and ".app/Contents/MacOS/" in sys.executable
+        if in_bundle:
+            resources_dir = str(Path(sys.executable).resolve().parent.parent / "Resources")
+            env["PYTHONHOME"] = resources_dir
+            env["PYTHONPATH"] = os.pathsep.join(parent_paths)
+        else:
+            combined = os.pathsep.join(parent_paths)
+            existing_pythonpath = env.get("PYTHONPATH", "")
+            if existing_pythonpath:
+                combined = existing_pythonpath + os.pathsep + combined
+            env["PYTHONPATH"] = combined
         if extra:
             env.update(extra)
         return env
@@ -637,11 +768,15 @@ class MemPalaceAdapter:
 
             # Aggregate wing -> room -> count
             wing_room: Dict[str, Dict[str, int]] = {}
+            source_files: set = set()
             for m in all_meta:
                 w = m.get("wing", "unknown")
                 r = m.get("room", "unknown")
                 wing_room.setdefault(w, {}).setdefault(r, 0)
                 wing_room[w][r] += 1
+                sf = m.get("source_file", "")
+                if sf:
+                    source_files.add(sf)
 
             wings = [
                 WingStatus(
@@ -654,6 +789,7 @@ class MemPalaceAdapter:
             return PalaceStatus(
                 ok=True,
                 total_drawers=total,
+                total_files=len(source_files),
                 wings=wings,
                 palace_path=self._palace_path,
                 chromadb_version=chromadb_version,
@@ -783,7 +919,7 @@ class MemPalaceAdapter:
         """Internal: build CLI command, drain stdout in a background thread,
         enforce wall-clock deadline, invalidate stale Chroma client."""
         cmd = [
-            sys.executable, "-m", "mempalace",
+            _resolve_python(), "-m", "mempalace",
             "--palace", self._palace_path,
             "mine", source_dir,
             "--mode", mode,
@@ -946,7 +1082,7 @@ class MemPalaceAdapter:
                 )
 
             cmd = [
-                sys.executable, "-m", "mempalace.mcp_server",
+                _resolve_python(), "-m", "mempalace.mcp_server",
                 "--palace", self._palace_path,
             ]
             if extra_args:
