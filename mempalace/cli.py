@@ -296,6 +296,111 @@ def cmd_mcp(args):
         print(f"  {base_server_cmd} --palace /path/to/palace")
 
 
+def cmd_context_pack(args):
+    """Build a Context Pack from a text file or raw text."""
+    from .context_pack import (
+        build_context_pack,
+        save_context_pack_to_palace,
+        context_pack_to_json,
+        _LLMConfig,
+    )
+
+    raw_text = ""
+    if args.file:
+        path = os.path.expanduser(args.file)
+        if not os.path.isfile(path):
+            print(f"\n  File not found: {path}")
+            sys.exit(1)
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            raw_text = f.read()
+    elif args.text:
+        raw_text = args.text
+    else:
+        print("\n  Provide --file <path> or --text <string>.")
+        sys.exit(1)
+
+    if not raw_text.strip():
+        print("\n  Input text is empty.")
+        sys.exit(1)
+
+    title = args.title or ""
+    source = args.source or (args.file if args.file else "raw_text")
+    wing = args.wing or ""
+    room = args.room or ""
+
+    llm_config = None
+    if args.llm or os.environ.get("LLM_ENDPOINT"):
+        llm_config = _LLMConfig(
+            endpoint=args.llm_endpoint if args.llm_endpoint else None,
+            key=args.llm_key if args.llm_key else None,
+            model=args.llm_model if args.llm_model else None,
+        )
+
+    result = build_context_pack(
+        raw_text=raw_text,
+        title=title,
+        source=source,
+        wing=wing,
+        room=room,
+        llm_config=llm_config,
+    )
+
+    if args.json:
+        print(context_pack_to_json(result))
+        return
+
+    print(f"\n{'=' * 60}")
+    print("  CONTEXT PACK")
+    print(f"{'=' * 60}")
+    print(f"  Title:   {title or '(untitled)'}")
+    print(f"  Source:  {source}")
+    print(f"  Wing:    {wing or '(none)'}")
+    print(f"  Room:    {room or '(none)'}")
+    print(
+        f"  Original: ~{result.metadata.original_tokens_est} tokens ({result.metadata.original_chars} chars)"
+    )
+    print(f"  Recap:   ~{result.metadata.recap_tokens_est} tokens ({result.metadata.recap_method})")
+    print(f"  Wake-up: ~{result.metadata.wakeup_tokens_est} tokens")
+    print(f"  AAAK:    ~{result.metadata.aaak_tokens_est} tokens")
+    print(
+        f"  Prompt:  ~{result.metadata.prompt_tokens_est} tokens ({result.metadata.prompt_method})"
+    )
+
+    if args.section == "all" or not args.section:
+        sections = ["recap", "wakeup", "aaak", "prompt"]
+    else:
+        sections = [args.section]
+
+    for sec in sections:
+        print(f"\n{'=' * 60}")
+        if sec == "recap":
+            print("  DETAILED RECAP")
+            print(f"{'=' * 60}")
+            print(result.detailed_recap)
+        elif sec == "wakeup":
+            print("  WAKE-UP")
+            print(f"{'=' * 60}")
+            print(result.wake_up)
+        elif sec == "aaak":
+            print("  AAAK COMPRESSED")
+            print(f"{'=' * 60}")
+            print(result.aaak_text)
+        elif sec == "prompt":
+            print("  REUSABLE PROMPT")
+            print(f"{'=' * 60}")
+            print(result.reusable_prompt)
+
+    if args.save:
+        palace_path = (
+            os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+        )
+        save_result = save_context_pack_to_palace(result, palace_path)
+        print(f"\n  Saved {save_result['filed']} artifacts to palace")
+        print(f"  Wing: {save_result['wing']}, Room: {save_result['room']}")
+    elif not args.save and not args.no_save_hint:
+        print("\n  (Not saved to palace. Use --save to persist.)")
+
+
 def cmd_compress(args):
     """Compress drawers in a wing using AAAK Dialect."""
     from .backends.chroma import ChromaBackend
@@ -501,6 +606,35 @@ def main():
         "--config", default=None, help="Entity config JSON (e.g. entities.json)"
     )
 
+    # context-pack
+    p_cp = sub.add_parser(
+        "context-pack",
+        help="Build a Context Pack from a text file or raw text (recap, wake-up, AAAK, prompt)",
+    )
+    p_cp.add_argument("--file", default=None, help="Read text from a file")
+    p_cp.add_argument("--text", default=None, help="Raw text input (alternative to --file)")
+    p_cp.add_argument("--title", default=None, help="Optional title for the context pack")
+    p_cp.add_argument("--source", default=None, help="Optional source identifier")
+    p_cp.add_argument("--wing", default=None, help="Wing name for palace storage")
+    p_cp.add_argument("--room", default=None, help="Room name for palace storage")
+    p_cp.add_argument(
+        "--section",
+        choices=["all", "recap", "wakeup", "aaak", "prompt"],
+        default="all",
+        help="Which section to output (default: all)",
+    )
+    p_cp.add_argument("--json", action="store_true", help="Output as JSON")
+    p_cp.add_argument(
+        "--save", action="store_true", help="Save original + derived artifacts to palace"
+    )
+    p_cp.add_argument("--no-save-hint", action="store_true", help="Suppress the 'use --save' hint")
+    p_cp.add_argument("--llm", action="store_true", help="Use BYO-LLM for richer recap and prompt")
+    p_cp.add_argument(
+        "--llm-endpoint", default=None, help="LLM endpoint URL (overrides $LLM_ENDPOINT)"
+    )
+    p_cp.add_argument("--llm-model", default=None, help="LLM model name (overrides $LLM_MODEL)")
+    p_cp.add_argument("--llm-key", default=None, help="LLM API key (overrides $LLM_KEY)")
+
     # wake-up
     p_wakeup = sub.add_parser("wake-up", help="Show L0 + L1 wake-up context (~600-900 tokens)")
     p_wakeup.add_argument("--wing", default=None, help="Wake-up for a specific project/wing")
@@ -620,6 +754,7 @@ def main():
         "repair": cmd_repair,
         "migrate": cmd_migrate,
         "status": cmd_status,
+        "context-pack": cmd_context_pack,
     }
     dispatch[args.command](args)
 

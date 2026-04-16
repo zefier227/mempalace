@@ -75,6 +75,7 @@ mempalace/
 │   ├── base.py          # Abstract interface — implement this for new backends
 │   └── chroma.py        # ChromaDB implementation
 ├── dialect.py           # AAAK compression dialect
+├── context_pack.py      # Context Pack: derive artifacts from raw text
 ├── normalize.py         # Transcript format detection + normalization
 ├── entity_detector.py   # Auto-detect people/projects from content
 ├── entity_registry.py   # Entity storage and disambiguation
@@ -130,4 +131,5 @@ Knowledge Graph:
 - **Modifying mining**: `mempalace/miner.py` (project files) or `mempalace/convo_miner.py` (transcripts)
 - **Adding a storage backend**: subclass `mempalace/backends/base.py`, register in `backends/__init__.py`
 - **Input validation**: `mempalace/config.py` — `sanitize_name()` / `sanitize_content()`
+- **Context Pack**: `mempalace/context_pack.py` — derive artifacts from a single text/dialogue
 - **Tests**: mirror source structure in `tests/test_<module>.py`

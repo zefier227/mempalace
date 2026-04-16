@@ -56,6 +56,7 @@ from mempalace.gui_adapter import (
     SearchFileGroup,
     SearchResult,
     SearchHit,
+    ContextPackResult,
 )
 
 
@@ -87,6 +88,7 @@ def _hline() -> QWidget:
 # ---------------------------------------------------------------------------
 # 1. InitPanel
 # ---------------------------------------------------------------------------
+
 
 class InitPanel(QWidget):
     """Set palace path and call safe_init()."""
@@ -158,14 +160,12 @@ class InitPanel(QWidget):
         self._path_edit.setText(new_path)
 
     def _browse_palace(self):
-        d = QFileDialog.getExistingDirectory(self, "Select palace directory",
-                                             str(Path.home()))
+        d = QFileDialog.getExistingDirectory(self, "Select palace directory", str(Path.home()))
         if d:
             self._path_edit.setText(d)
 
     def _browse_project(self):
-        d = QFileDialog.getExistingDirectory(self, "Select project directory",
-                                             str(Path.home()))
+        d = QFileDialog.getExistingDirectory(self, "Select project directory", str(Path.home()))
         if d:
             self._project_edit.setText(d)
 
@@ -203,6 +203,7 @@ class InitPanel(QWidget):
 # ---------------------------------------------------------------------------
 # 2. MinePanel
 # ---------------------------------------------------------------------------
+
 
 class MinePanel(QWidget):
     """Pick a project directory, mine it, watch live progress."""
@@ -266,8 +267,7 @@ class MinePanel(QWidget):
         self._ctrl.busy_changed.connect(self._on_busy)
 
     def _browse_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "Select project directory",
-                                             str(Path.home()))
+        d = QFileDialog.getExistingDirectory(self, "Select project directory", str(Path.home()))
         if d:
             self._dir_edit.setText(d)
 
@@ -314,12 +314,13 @@ class MinePanel(QWidget):
         self._mine_btn.setEnabled(not busy)
         self._progress.setVisible(busy)
         if busy:
-            self._progress.setRange(0, 0)   # indeterminate while starting
+            self._progress.setRange(0, 0)  # indeterminate while starting
 
 
 # ---------------------------------------------------------------------------
 # 3. StatusPanel
 # ---------------------------------------------------------------------------
+
 
 class StatusPanel(QWidget):
     """Palace overview -- wings, rooms, drawer counts."""
@@ -420,6 +421,7 @@ class StatusPanel(QWidget):
 # ---------------------------------------------------------------------------
 # 4. SearchPanel
 # ---------------------------------------------------------------------------
+
 
 class SearchPanel(QWidget):
     """Natural-language search with result previews."""
@@ -613,8 +615,7 @@ class SearchPanel(QWidget):
         self._last_query = q
         self._last_wing = wing
         self._last_n_results = n
-        self._ctrl.request_search(q, wing=wing, n_results=n,
-                                  max_distance=max_dist)
+        self._ctrl.request_search(q, wing=wing, n_results=n, max_distance=max_dist)
 
     def _on_threshold_changed(self, value: int):
         if value == 0:
@@ -687,9 +688,7 @@ class SearchPanel(QWidget):
         extra_chunks = total_hits - file_count
         file_label = f"{file_count} file{'s' if file_count != 1 else ''}"
         chunk_info = f", {total_hits} chunks" if extra_chunks > 0 else ""
-        self._result_count_lbl.setText(
-            f"{file_label}{chunk_info}{total_str}"
-        )
+        self._result_count_lbl.setText(f"{file_label}{chunk_info}{total_str}")
         self._show_more_btn.setVisible(bool(has_more))
         self._empty_lbl.setVisible(False)
 
@@ -707,7 +706,7 @@ class SearchPanel(QWidget):
                 line1 += f"  ·  sim {sim_str}"
 
             # Line 2: query-relevant excerpt (quoted)
-            line2 = f"       \"{excerpt}\""
+            line2 = f'       "{excerpt}"'
             if group.hit_count > 1:
                 line2 += f"  [+{len(group.extra_hits)} more]"
 
@@ -756,7 +755,7 @@ class SearchPanel(QWidget):
         # Best excerpt — query-relevant quote
         excerpt = group.excerpt_for_chunk(chunk_index, 90)
         if excerpt:
-            self._excerpt_lbl.setText(f"\"{excerpt}\"")
+            self._excerpt_lbl.setText(f'"{excerpt}"')
         else:
             self._excerpt_lbl.clear()
 
@@ -779,7 +778,7 @@ class SearchPanel(QWidget):
             chunk_snippet = group.snippet_for_chunk(chunk_index, 50)
             nav_text = f"Chunk {chunk_index + 1}/{len(hits)}"
             if chunk_snippet:
-                nav_text += f": \"{chunk_snippet}\""
+                nav_text += f': "{chunk_snippet}"'
             self._chunk_nav_lbl.setText(nav_text)
             self._prev_chunk_btn.setVisible(chunk_index > 0)
             self._next_chunk_btn.setVisible(chunk_index < len(hits) - 1)
@@ -805,8 +804,7 @@ class SearchPanel(QWidget):
                 highlighted,
             )
         self._preview.setHtml(
-            "<pre style='white-space:pre-wrap;font-family:monospace;'>"
-            + highlighted + "</pre>"
+            "<pre style='white-space:pre-wrap;font-family:monospace;'>" + highlighted + "</pre>"
         )
 
     def _on_prev_chunk(self):
@@ -834,8 +832,257 @@ class SearchPanel(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# 5. ContextPackPanel
+# ---------------------------------------------------------------------------
+
+
+class ContextPackPanel(QWidget):
+    """Generate a Context Pack from raw text or a file."""
+
+    def __init__(self, controller: QtController, parent=None):
+        super().__init__(parent)
+        self._ctrl = controller
+        self._last_result: Optional[ContextPackResult] = None
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setAlignment(Qt.AlignTop)
+        root.setSpacing(10)
+        root.setContentsMargins(20, 20, 20, 20)
+
+        root.addWidget(_label("Context Pack", bold=True))
+        root.addWidget(_hline())
+
+        desc = QLabel(
+            "Generate derived artifacts from a text or dialogue.\n"
+            "Original text always remains the source of truth."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #666; margin-bottom: 6px;")
+        root.addWidget(desc)
+
+        title_row = QHBoxLayout()
+        title_row.addWidget(_label("Title:"))
+        self._title_edit = QLineEdit()
+        self._title_edit.setPlaceholderText("Optional title")
+        title_row.addWidget(self._title_edit, 1)
+        root.addLayout(title_row)
+
+        source_row = QHBoxLayout()
+        source_row.addWidget(_label("Source:"))
+        self._source_edit = QLineEdit()
+        self._source_edit.setPlaceholderText("Optional source identifier")
+        source_row.addWidget(self._source_edit, 1)
+        root.addLayout(source_row)
+
+        wing_room_row = QHBoxLayout()
+        wing_room_row.addWidget(_label("Wing:"))
+        self._wing_edit = QLineEdit()
+        self._wing_edit.setPlaceholderText("Optional")
+        wing_room_row.addWidget(self._wing_edit, 1)
+        wing_room_row.addWidget(_label("Room:"))
+        self._room_edit = QLineEdit()
+        self._room_edit.setPlaceholderText("Optional")
+        wing_room_row.addWidget(self._room_edit, 1)
+        root.addLayout(wing_room_row)
+
+        file_row = QHBoxLayout()
+        file_row.addWidget(_label("File:"))
+        self._file_edit = QLineEdit()
+        self._file_edit.setPlaceholderText("Optional -- read text from a file instead")
+        file_row.addWidget(self._file_edit, 1)
+        file_browse = QPushButton("Browse...")
+        file_browse.clicked.connect(self._browse_file)
+        file_row.addWidget(file_browse)
+        root.addLayout(file_row)
+
+        root.addWidget(_label("Text (or load from file above):"))
+        self._text_edit = QTextEdit()
+        self._text_edit.setPlaceholderText("Paste your text or dialogue here...")
+        self._text_edit.setMinimumHeight(120)
+        self._text_edit.setFont(_MONO)
+        root.addWidget(self._text_edit)
+
+        btn_row = QHBoxLayout()
+        self._gen_btn = QPushButton("Generate Context Pack")
+        self._gen_btn.setFixedHeight(36)
+        self._gen_btn.clicked.connect(self._do_generate)
+        btn_row.addWidget(self._gen_btn)
+        self._llm_cb = QCheckBox("Use LLM (BYO-LLM)")
+        self._llm_cb.setToolTip("Requires LLM_ENDPOINT and LLM_MODEL env vars")
+        btn_row.addWidget(self._llm_cb)
+        btn_row.addStretch()
+        root.addLayout(btn_row)
+
+        self._result_tabs = QTabWidget()
+        self._result_tabs.setVisible(False)
+
+        self._recap_edit = QTextEdit()
+        self._recap_edit.setReadOnly(True)
+        self._recap_edit.setFont(_MONO)
+        recap_copy = QPushButton("Copy")
+        recap_copy.clicked.connect(lambda: self._copy_to_clipboard(self._recap_edit.toPlainText()))
+        recap_layout = QVBoxLayout()
+        recap_header = QHBoxLayout()
+        recap_header.addWidget(_label("Detailed Recap"))
+        recap_header.addStretch()
+        recap_header.addWidget(recap_copy)
+        recap_layout.addLayout(recap_header)
+        recap_layout.addWidget(self._recap_edit)
+        recap_w = QWidget()
+        recap_w.setLayout(recap_layout)
+        self._result_tabs.addTab(recap_w, "Recap")
+
+        self._wakeup_edit = QTextEdit()
+        self._wakeup_edit.setReadOnly(True)
+        self._wakeup_edit.setFont(_MONO)
+        wakeup_copy = QPushButton("Copy")
+        wakeup_copy.clicked.connect(
+            lambda: self._copy_to_clipboard(self._wakeup_edit.toPlainText())
+        )
+        wakeup_layout = QVBoxLayout()
+        wakeup_header = QHBoxLayout()
+        wakeup_header.addWidget(_label("Wake-up"))
+        wakeup_header.addStretch()
+        wakeup_header.addWidget(wakeup_copy)
+        wakeup_layout.addLayout(wakeup_header)
+        wakeup_layout.addWidget(self._wakeup_edit)
+        wakeup_w = QWidget()
+        wakeup_w.setLayout(wakeup_layout)
+        self._result_tabs.addTab(wakeup_w, "Wake-up")
+
+        self._aaak_edit = QTextEdit()
+        self._aaak_edit.setReadOnly(True)
+        self._aaak_edit.setFont(_MONO)
+        aaak_copy = QPushButton("Copy")
+        aaak_copy.clicked.connect(lambda: self._copy_to_clipboard(self._aaak_edit.toPlainText()))
+        aaak_layout = QVBoxLayout()
+        aaak_header = QHBoxLayout()
+        aaak_header.addWidget(_label("AAAK Compressed"))
+        aaak_header.addStretch()
+        aaak_header.addWidget(aaak_copy)
+        aaak_layout.addLayout(aaak_header)
+        aaak_layout.addWidget(self._aaak_edit)
+        aaak_w = QWidget()
+        aaak_w.setLayout(aaak_layout)
+        self._result_tabs.addTab(aaak_w, "AAAK")
+
+        self._prompt_edit = QTextEdit()
+        self._prompt_edit.setReadOnly(True)
+        self._prompt_edit.setFont(_MONO)
+        prompt_copy = QPushButton("Copy")
+        prompt_copy.clicked.connect(
+            lambda: self._copy_to_clipboard(self._prompt_edit.toPlainText())
+        )
+        prompt_layout = QVBoxLayout()
+        prompt_header = QHBoxLayout()
+        prompt_header.addWidget(_label("Reusable Prompt"))
+        prompt_header.addStretch()
+        prompt_header.addWidget(prompt_copy)
+        prompt_layout.addLayout(prompt_header)
+        prompt_layout.addWidget(self._prompt_edit)
+        prompt_w = QWidget()
+        prompt_w.setLayout(prompt_layout)
+        self._result_tabs.addTab(prompt_w, "Prompt")
+
+        root.addWidget(self._result_tabs)
+
+        self._stats_lbl = QLabel("")
+        self._stats_lbl.setStyleSheet("color: #666; font-size: 11px;")
+        self._stats_lbl.setVisible(False)
+        root.addWidget(self._stats_lbl)
+
+        self._save_btn = QPushButton("Save to Palace")
+        self._save_btn.setFixedHeight(32)
+        self._save_btn.setVisible(False)
+        self._save_btn.clicked.connect(self._do_save)
+        root.addWidget(self._save_btn)
+
+        root.addStretch()
+
+        self._ctrl.context_pack_finished.connect(self._on_result)
+        self._ctrl.busy_changed.connect(self._on_busy)
+
+    def _browse_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select text file",
+            str(Path.home()),
+            "Text Files (*.txt *.md *.json *.jsonl);;All Files (*)",
+        )
+        if path:
+            self._file_edit.setText(path)
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    self._text_edit.setPlainText(f.read())
+            except Exception as e:
+                self._text_edit.setPlainText(f"Error reading file: {e}")
+
+    def _do_generate(self):
+        raw_text = self._text_edit.toPlainText().strip()
+        if not raw_text:
+            QMessageBox.warning(self, "No text", "Please paste text or load a file.")
+            return
+        self._ctrl.request_context_pack(
+            raw_text=raw_text,
+            title=self._title_edit.text().strip(),
+            source=self._source_edit.text().strip() or self._file_edit.text().strip(),
+            wing=self._wing_edit.text().strip(),
+            room=self._room_edit.text().strip(),
+            use_llm=self._llm_cb.isChecked(),
+        )
+
+    @Slot(object)
+    def _on_result(self, result: ContextPackResult):
+        if not result.ok:
+            QMessageBox.warning(self, "Error", result.error or "Context Pack generation failed.")
+            return
+
+        self._last_result = result
+        self._recap_edit.setPlainText(result.detailed_recap)
+        self._wakeup_edit.setPlainText(result.wake_up)
+        self._aaak_edit.setPlainText(result.aaak_text)
+        self._prompt_edit.setPlainText(result.reusable_prompt)
+        self._result_tabs.setVisible(True)
+
+        self._stats_lbl.setText(
+            f"Original: ~{result.original_tokens_est}t | "
+            f"Recap: ~{result.recap_tokens_est}t ({result.recap_method}) | "
+            f"Wake-up: ~{result.wakeup_tokens_est}t | "
+            f"AAAK: ~{result.aaak_tokens_est}t | "
+            f"Prompt: ~{result.prompt_tokens_est}t ({result.prompt_method})"
+        )
+        self._stats_lbl.setVisible(True)
+        self._save_btn.setVisible(True)
+
+    def _do_save(self):
+        if not self._last_result:
+            return
+        result = self._ctrl.save_context_pack(self._last_result)
+        filed = result.get("filed", 0)
+        QMessageBox.information(
+            self,
+            "Saved",
+            f"Saved {filed} artifacts to palace.\n"
+            f"Wing: {result.get('wing', '')}, Room: {result.get('room', '')}",
+        )
+
+    def _copy_to_clipboard(self, text: str):
+        from PySide6.QtGui import QGuiApplication
+
+        cb = QGuiApplication.clipboard()
+        cb.setText(text)
+
+    @Slot(bool)
+    def _on_busy(self, busy: bool):
+        self._gen_btn.setEnabled(not busy)
+
+
+# ---------------------------------------------------------------------------
 # MainWindow
 # ---------------------------------------------------------------------------
+
 
 class MainWindow(QMainWindow):
     """Single-window MemPalace MVP."""
@@ -859,15 +1106,17 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         self._tabs = QTabWidget()
-        self._init_panel   = InitPanel(self._ctrl)
-        self._mine_panel   = MinePanel(self._ctrl)
+        self._init_panel = InitPanel(self._ctrl)
+        self._mine_panel = MinePanel(self._ctrl)
         self._status_panel = StatusPanel(self._ctrl)
         self._search_panel = SearchPanel(self._ctrl)
+        self._cp_panel = ContextPackPanel(self._ctrl)
 
-        self._tabs.addTab(self._init_panel,    "Init")
-        self._tabs.addTab(self._mine_panel,    "Mine")
-        self._tabs.addTab(self._status_panel,  "Status")
-        self._tabs.addTab(self._search_panel,  "Search")
+        self._tabs.addTab(self._init_panel, "Init")
+        self._tabs.addTab(self._mine_panel, "Mine")
+        self._tabs.addTab(self._status_panel, "Status")
+        self._tabs.addTab(self._search_panel, "Search")
+        self._tabs.addTab(self._cp_panel, "Context Pack")
         layout.addWidget(self._tabs)
 
         # Status bar at bottom

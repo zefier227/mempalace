@@ -492,6 +492,27 @@ class McpServerStatus:
     error: Optional[str] = None
 
 
+@dataclass
+class ContextPackResult:
+    ok: bool
+    detailed_recap: str = ""
+    wake_up: str = ""
+    aaak_text: str = ""
+    reusable_prompt: str = ""
+    title: str = ""
+    source: str = ""
+    wing: str = ""
+    room: str = ""
+    original_tokens_est: int = 0
+    recap_tokens_est: int = 0
+    wakeup_tokens_est: int = 0
+    aaak_tokens_est: int = 0
+    prompt_tokens_est: int = 0
+    recap_method: str = "template"
+    prompt_method: str = "template"
+    error: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # MineHandle — cancellable mine operation
 # ---------------------------------------------------------------------------
@@ -1580,3 +1601,88 @@ class MemPalaceAdapter:
             f"MemPalaceAdapter(palace_path={self._palace_path!r}, "
             f"mcp_pid={mcp_pid})"
         )
+
+    # ------------------------------------------------------------------
+    # Context Pack — generate derived artifacts from raw text
+    # ------------------------------------------------------------------
+
+    def run_context_pack(
+        self,
+        raw_text: str,
+        title: str = "",
+        source: str = "",
+        wing: str = "",
+        room: str = "",
+        use_llm: bool = False,
+    ) -> ContextPackResult:
+        """Build a Context Pack from raw text (direct Python call, no subprocess).
+
+        Returns structured ContextPackResult with all four derived artifacts.
+        """
+        from .context_pack import build_context_pack, _LLMConfig
+
+        llm_config = None
+        if use_llm:
+            llm_config = _LLMConfig()
+            if llm_config.missing():
+                return ContextPackResult(
+                    ok=False,
+                    error="LLM not configured. Set LLM_ENDPOINT and LLM_MODEL env vars.",
+                )
+
+        try:
+            result = build_context_pack(
+                raw_text=raw_text,
+                title=title,
+                source=source,
+                wing=wing,
+                room=room,
+                llm_config=llm_config,
+            )
+        except Exception as e:
+            return ContextPackResult(ok=False, error=str(e))
+
+        return ContextPackResult(
+            ok=True,
+            detailed_recap=result.detailed_recap,
+            wake_up=result.wake_up,
+            aaak_text=result.aaak_text,
+            reusable_prompt=result.reusable_prompt,
+            title=result.metadata.title,
+            source=result.metadata.source,
+            wing=result.metadata.wing,
+            room=result.metadata.room,
+            original_tokens_est=result.metadata.original_tokens_est,
+            recap_tokens_est=result.metadata.recap_tokens_est,
+            wakeup_tokens_est=result.metadata.wakeup_tokens_est,
+            aaak_tokens_est=result.metadata.aaak_tokens_est,
+            prompt_tokens_est=result.metadata.prompt_tokens_est,
+            recap_method=result.metadata.recap_method,
+            prompt_method=result.metadata.prompt_method,
+        )
+
+    def save_context_pack(
+        self,
+        cp_result: ContextPackResult,
+    ) -> dict:
+        """Save a ContextPackResult's original + derived artifacts to palace."""
+        from .context_pack import (
+            ContextPackResult as CPResult,
+            ContextPackMetadata,
+            save_context_pack_to_palace,
+        )
+
+        core_result = CPResult(
+            original_text="",
+            detailed_recap=cp_result.detailed_recap,
+            wake_up=cp_result.wake_up,
+            aaak_text=cp_result.aaak_text,
+            reusable_prompt=cp_result.reusable_prompt,
+            metadata=ContextPackMetadata(
+                title=cp_result.title,
+                source=cp_result.source,
+                wing=cp_result.wing,
+                room=cp_result.room,
+            ),
+        )
+        return save_context_pack_to_palace(core_result, self._palace_path)

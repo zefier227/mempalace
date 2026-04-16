@@ -65,6 +65,7 @@ from mempalace.gui_adapter import (
     MineResult,
     PalaceStatus,
     SearchResult,
+    ContextPackResult,
 )
 
 logger = logging.getLogger("mempalace.gui.controller")
@@ -159,6 +160,33 @@ class _SearchWorker(_Worker):
         self.finished.emit(result)
 
 
+class _ContextPackWorker(_Worker):
+    finished = Signal(object)   # ContextPackResult
+
+    def __init__(self, adapter: MemPalaceAdapter, raw_text: str,
+                 title: str, source: str, wing: str, room: str,
+                 use_llm: bool, parent=None):
+        super().__init__(parent)
+        self._adapter = adapter
+        self._raw_text = raw_text
+        self._title = title
+        self._source = source
+        self._wing = wing
+        self._room = room
+        self._use_llm = use_llm
+
+    def run(self):
+        result = self._adapter.run_context_pack(
+            self._raw_text,
+            title=self._title,
+            source=self._source,
+            wing=self._wing,
+            room=self._room,
+            use_llm=self._use_llm,
+        )
+        self.finished.emit(result)
+
+
 # ---------------------------------------------------------------------------
 # QtController
 # ---------------------------------------------------------------------------
@@ -190,6 +218,7 @@ class QtController(QObject):
     mine_finished   = Signal(object)   # MineResult
     status_finished = Signal(object)   # PalaceStatus
     search_finished = Signal(object)   # SearchResult
+    context_pack_finished = Signal(object)  # ContextPackResult
     busy_changed    = Signal(bool)
     error           = Signal(str)
     palace_switched = Signal(str)      # new palace path
@@ -202,6 +231,7 @@ class QtController(QObject):
         self._search_worker: Optional[_SearchWorker] = None
         self._status_worker: Optional[_StatusWorker] = None
         self._init_worker: Optional[_InitWorker] = None
+        self._cp_worker: Optional[_ContextPackWorker] = None
 
     @property
     def palace_path(self) -> str:
@@ -289,6 +319,35 @@ class QtController(QObject):
         self._search_worker = w
         w.start()
 
+    def request_context_pack(
+        self,
+        raw_text: str,
+        title: str = "",
+        source: str = "",
+        wing: str = "",
+        room: str = "",
+        use_llm: bool = False,
+    ) -> None:
+        """Build a Context Pack (non-blocking). Ignores if busy."""
+        if not raw_text.strip():
+            return
+        if self._busy:
+            self.error.emit("Another operation is in progress. Please wait.")
+            return
+        self._set_busy(True)
+        w = _ContextPackWorker(
+            self._adapter, raw_text, title, source, wing, room,
+            use_llm, parent=self,
+        )
+        w.finished.connect(self._on_context_pack_done)
+        w.finished.connect(w.deleteLater)
+        self._cp_worker = w
+        w.start()
+
+    def save_context_pack(self, cp_result: ContextPackResult) -> dict:
+        """Save context pack artifacts to palace (synchronous, fast)."""
+        return self._adapter.save_context_pack(cp_result)
+
     # ------------------------------------------------------------------
     # Internal slots (called from worker threads via Qt queued connection)
     # ------------------------------------------------------------------
@@ -330,6 +389,13 @@ class QtController(QObject):
         if not result.ok:
             self.error.emit(f"Search failed: {result.error}")
         self.search_finished.emit(result)
+
+    @Slot(object)
+    def _on_context_pack_done(self, result: ContextPackResult) -> None:
+        self._set_busy(False)
+        if not result.ok:
+            self.error.emit(f"Context Pack failed: {result.error}")
+        self.context_pack_finished.emit(result)
 
     # ------------------------------------------------------------------
     # Helpers

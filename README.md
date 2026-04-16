@@ -149,6 +149,32 @@ system prompt:
 Two Claude Code hooks save periodically and before context compression:
 [mempalaceofficial.com/guide/hooks](https://mempalaceofficial.com/guide/hooks.html).
 
+## Context Pack
+
+Process a single text or dialogue into derived artifacts **without losing the original**.
+The original text always remains the source of truth — derived outputs are aids, not replacements.
+
+**Four outputs:**
+
+| Output | Purpose | Size |
+|---|---|---|
+| Detailed Recap | Big, detail-preserving recap (decisions, reasons, constraints, entities, chronology, open questions) | Dense |
+| Wake-up | Short starter context for a new session | ~100-300 tokens |
+| AAAK Compressed | Lossy symbolic summary (reuses `Dialect.compress`) | Compact |
+| Reusable Prompt | Ready-to-paste prompt for a new AI session | ~200 tokens |
+
+**CLI:**
+
+```bash
+mempalace context-pack --file meeting_notes.txt --title "Architecture Decision"
+mempalace context-pack --text "We decided to use GraphQL..." --section recap
+mempalace context-pack --file dialogue.md --save --wing project --room meetings
+```
+
+**GUI:** Open the "Context Pack" tab, paste text or load a file, click Generate.
+
+**LLM enrichment** (optional, BYO-LLM): set `LLM_ENDPOINT` and `LLM_MODEL` env vars or pass `--llm` with `--llm-endpoint` / `--llm-model` flags. Without an LLM, template-based extraction is used.
+
 ---
 
 ## Requirements
