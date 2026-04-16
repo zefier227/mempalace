@@ -453,3 +453,83 @@ class TestInformativeSnippet:
         result = _informative_snippet(text, max_len=40)
         assert len(result) <= 40
         assert result.endswith("...")
+
+
+# ---------------------------------------------------------------------------
+# 8. Search explanation / why-matched in GUI
+# ---------------------------------------------------------------------------
+
+
+class TestSearchExplanationGUI:
+    """Verify that the SearchPanel shows 'Why this matched' and excerpt."""
+
+    def _make_and_search(self, qapp, tmp_palace, tmp_path):
+        from gui.qt_controller import QtController
+        from gui.main_window import SearchPanel
+        from mempalace.gui_adapter import MemPalaceAdapter
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        proj = tmp_path / "explain_project"
+        proj.mkdir()
+        (proj / "alpha.md").write_text(
+            "We chose GraphQL over REST for the API layer.\n"
+            "The decision was driven by frontend needs.\n"
+        )
+        (proj / "beta.md").write_text(
+            "Redis caching is used for session storage.\n"
+            "PostgreSQL handles the main data workload.\n"
+        )
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(proj))
+        result = adapter.run_search("GraphQL API", n_results=50)
+        panel._on_search_done(result)
+        return ctrl, panel, result
+
+    def test_why_matched_visible_on_selection(self, qapp, tmp_palace, tmp_path):
+        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
+        if not result.groups:
+            pytest.skip("No groups")
+        panel._on_result_selected(0)
+        why_text = panel._why_matched_lbl.text()
+        assert len(why_text) > 0
+
+    def test_excerpt_visible_on_selection(self, qapp, tmp_palace, tmp_path):
+        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
+        if not result.groups:
+            pytest.skip("No groups")
+        panel._on_result_selected(0)
+        excerpt_text = panel._excerpt_lbl.text()
+        assert len(excerpt_text) > 0
+
+    def test_switching_group_updates_why_matched(self, qapp, tmp_palace, tmp_path):
+        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
+        if len(result.groups) < 2:
+            pytest.skip("Need 2+ groups")
+        panel._on_result_selected(0)
+        why_0 = panel._why_matched_lbl.text()
+        panel._on_result_selected(1)
+        why_1 = panel._why_matched_lbl.text()
+        assert why_0 != why_1 or len(result.groups) == 1
+
+    def test_new_query_clears_why_matched(self, qapp, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import SearchResult
+        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
+        if not result.groups:
+            pytest.skip("No groups")
+        panel._on_result_selected(0)
+        assert panel._why_matched_lbl.text() != ""
+        panel._on_search_done(SearchResult(ok=True, query="new", hits=[], groups=[]))
+        assert panel._why_matched_lbl.text() == ""
+
+    def test_chunk_nav_preserves_file_explanation(self, qapp, tmp_palace, tmp_path):
+        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
+        if not result.groups:
+            pytest.skip("No groups")
+        panel._on_result_selected(0)
+        group = result.groups[0]
+        if group.hit_count < 2:
+            pytest.skip("Need 2+ chunks in group")
+        why_before = panel._why_matched_lbl.text()
+        panel._show_group(0, chunk_index=1)
+        why_after = panel._why_matched_lbl.text()
+        assert why_before == why_after  # file-level explanation stays same

@@ -16,6 +16,7 @@ MemPalaceAdapter).  This file contains ZERO business logic.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional, List
 
@@ -521,6 +522,24 @@ class SearchPanel(QWidget):
         )
         right_layout.addWidget(self._preview_header)
 
+        # Why this matched — explanation block
+        self._why_matched_lbl = QLabel("")
+        self._why_matched_lbl.setWordWrap(True)
+        self._why_matched_lbl.setStyleSheet(
+            "font-size: 12px; color: #1a6b1a; padding: 4px 8px; "
+            "background: #e8f5e8; border-radius: 3px;"
+        )
+        right_layout.addWidget(self._why_matched_lbl)
+
+        # Best excerpt — highlighted match context
+        self._excerpt_lbl = QLabel("")
+        self._excerpt_lbl.setWordWrap(True)
+        self._excerpt_lbl.setStyleSheet(
+            "font-size: 12px; color: #333; padding: 4px 8px; "
+            "background: #fffbe6; border-left: 3px solid #f0c040;"
+        )
+        right_layout.addWidget(self._excerpt_lbl)
+
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
         self._preview.setFont(_MONO)
@@ -573,6 +592,8 @@ class SearchPanel(QWidget):
         self._results_list.clear()
         self._preview.clear()
         self._preview_header.clear()
+        self._why_matched_lbl.clear()
+        self._excerpt_lbl.clear()
         self._meta_lbl.clear()
         self._chunk_nav_lbl.clear()
         self._prev_chunk_btn.setVisible(False)
@@ -626,6 +647,8 @@ class SearchPanel(QWidget):
         self._results_list.clear()
         self._preview.clear()
         self._preview_header.clear()
+        self._why_matched_lbl.clear()
+        self._excerpt_lbl.clear()
         self._meta_lbl.clear()
         self._chunk_nav_lbl.clear()
         self._prev_chunk_btn.setVisible(False)
@@ -672,7 +695,7 @@ class SearchPanel(QWidget):
 
         for i, group in enumerate(self._groups):
             hit = group.best_hit
-            snippet = group.snippet(60)
+            excerpt = group.excerpt(60)
             loc = group.location_label()
             sim_str = f"{hit.similarity:.2f}" if hit.similarity is not None else ""
 
@@ -683,8 +706,8 @@ class SearchPanel(QWidget):
             if sim_str:
                 line1 += f"  ·  sim {sim_str}"
 
-            # Line 2: distinguishing snippet (use · separator, no \n)
-            line2 = f"       \"{snippet}\""
+            # Line 2: query-relevant excerpt (quoted)
+            line2 = f"       \"{excerpt}\""
             if group.hit_count > 1:
                 line2 += f"  [+{len(group.extra_hits)} more]"
 
@@ -723,6 +746,23 @@ class SearchPanel(QWidget):
             header_parts.append(f"({chunk_index + 1}/{len(hits)} chunks)")
         self._preview_header.setText("  ·  ".join(header_parts))
 
+        # Why this matched — explanation block
+        why = group.why_matched()
+        if why:
+            self._why_matched_lbl.setText(f"Match: {why}")
+        else:
+            self._why_matched_lbl.clear()
+
+        # Best excerpt — query-relevant quote
+        excerpt = group.excerpt_for_chunk(chunk_index, 90)
+        if excerpt:
+            self._excerpt_lbl.setText(f"\"{excerpt}\"")
+        else:
+            self._excerpt_lbl.clear()
+
+        # Full chunk text — highlight matching terms
+        self._set_highlighted_preview(hit.text, group.matched_terms())
+
         meta_parts = [
             f"Wing: {hit.wing}",
             f"Room: {hit.room}",
@@ -751,6 +791,23 @@ class SearchPanel(QWidget):
             self._next_chunk_btn.setVisible(False)
 
         self._groups[group_row]._active_chunk = chunk_index
+
+    def _set_highlighted_preview(self, text: str, terms: list) -> None:
+        """Show chunk text in preview with query-matching terms highlighted."""
+        if not terms:
+            self._preview.setPlainText(text)
+            return
+        highlighted = text
+        for term in terms:
+            pattern = re.compile(rf"\b({re.escape(term)})\b", re.IGNORECASE)
+            highlighted = pattern.sub(
+                r'<span style="background:#fff3b0;font-weight:bold">\1</span>',
+                highlighted,
+            )
+        self._preview.setHtml(
+            "<pre style='white-space:pre-wrap;font-family:monospace;'>"
+            + highlighted + "</pre>"
+        )
 
     def _on_prev_chunk(self):
         row = self._results_list.currentRow()

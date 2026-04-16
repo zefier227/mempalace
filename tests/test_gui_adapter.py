@@ -1056,3 +1056,138 @@ class TestAggregateHitsUnit:
             best_hit=hit, extra_hits=[],
         )
         assert group.location_label() == "L10–15"
+
+
+# ---------------------------------------------------------------------------
+# 16. Query-relevant excerpts and why-matched
+# ---------------------------------------------------------------------------
+
+
+class TestQueryExcerpt:
+    """_query_excerpt must pick the line most relevant to the query."""
+
+    def test_excerpt_picks_query_relevant_line(self):
+        from mempalace.gui_adapter import _query_excerpt
+        text = "# Header\nWe switched to GraphQL because REST was too chatty.\nNo match here.\n"
+        result = _query_excerpt(text, "GraphQL REST", max_len=80)
+        assert "GraphQL" in result or "REST" in result
+
+    def test_excerpt_different_queries_different_excerpts(self):
+        from mempalace.gui_adapter import _query_excerpt
+        text = (
+            "GraphQL API design decisions\n"
+            "Redis caching strategy overview\n"
+            "PostgreSQL tuning notes\n"
+        )
+        r1 = _query_excerpt(text, "Redis caching", max_len=80)
+        r2 = _query_excerpt(text, "PostgreSQL tuning", max_len=80)
+        assert "Redis" in r1
+        assert "PostgreSQL" in r2
+
+    def test_excerpt_fallback_when_no_match(self):
+        from mempalace.gui_adapter import _query_excerpt
+        text = "Some unrelated content about architecture\n"
+        result = _query_excerpt(text, "xyznonexistent", max_len=80)
+        assert len(result) > 0
+
+    def test_excerpt_empty_query(self):
+        from mempalace.gui_adapter import _query_excerpt
+        text = "Some content here\n"
+        result = _query_excerpt(text, "", max_len=80)
+        assert len(result) > 0
+
+    def test_excerpt_truncates_long_line(self):
+        from mempalace.gui_adapter import _query_excerpt
+        text = "X " * 200 + "GraphQL API" + " Y" * 200
+        result = _query_excerpt(text, "GraphQL", max_len=40)
+        assert len(result) <= 43  # max_len + "..."
+
+
+class TestSearchFileGroupWhyMatched:
+    """SearchFileGroup.why_matched() and excerpt() must be query-aware."""
+
+    def test_why_matched_with_query_terms(self):
+        hit = SearchHit(
+            text="We use GraphQL for the API layer", wing="w", room="r",
+            source_file="api.md", source_path="/api.md",
+            similarity=0.85, distance=0.15,
+            line_start=10, line_end=12,
+        )
+        group = SearchFileGroup(
+            source_path="/api.md", source_file="api.md",
+            best_hit=hit, extra_hits=[], query="GraphQL API",
+        )
+        why = group.why_matched()
+        assert "GraphQL" in why or "api" in why
+        assert "strong match" in why
+
+    def test_why_matched_weak_match(self):
+        hit = SearchHit(
+            text="Something vaguely related", wing="w", room="r",
+            source_file="misc.md", source_path="/misc.md",
+            similarity=0.25, distance=0.75,
+            chunk_index=3,
+        )
+        group = SearchFileGroup(
+            source_path="/misc.md", source_file="misc.md",
+            best_hit=hit, extra_hits=[], query="database",
+        )
+        why = group.why_matched()
+        assert "weak match" in why
+
+    def test_excerpt_query_aware(self):
+        hit = SearchHit(
+            text="Redis caching strategy\nPostgreSQL tuning notes\n",
+            wing="w", room="r",
+            source_file="db.md", source_path="/db.md",
+            similarity=0.8, distance=0.2,
+        )
+        group = SearchFileGroup(
+            source_path="/db.md", source_file="db.md",
+            best_hit=hit, extra_hits=[], query="Redis",
+        )
+        excerpt = group.excerpt()
+        assert "Redis" in excerpt
+
+    def test_excerpt_different_query_different_excerpt(self):
+        hit = SearchHit(
+            text="GraphQL API design\nRedis caching strategy\n",
+            wing="w", room="r",
+            source_file="arch.md", source_path="/arch.md",
+            similarity=0.8, distance=0.2,
+        )
+        g1 = SearchFileGroup(
+            source_path="/arch.md", source_file="arch.md",
+            best_hit=hit, extra_hits=[], query="GraphQL",
+        )
+        g2 = SearchFileGroup(
+            source_path="/arch.md", source_file="arch.md",
+            best_hit=hit, extra_hits=[], query="Redis",
+        )
+        assert "GraphQL" in g1.excerpt()
+        assert "Redis" in g2.excerpt()
+
+    def test_matched_terms(self):
+        hit = SearchHit(
+            text="We switched to GraphQL because REST was chatty",
+            wing="w", room="r",
+            source_file="api.md", source_path="/api.md",
+            similarity=0.9, distance=0.1,
+        )
+        group = SearchFileGroup(
+            source_path="/api.md", source_file="api.md",
+            best_hit=hit, extra_hits=[], query="GraphQL REST",
+        )
+        terms = group.matched_terms()
+        assert "graphql" in terms
+        assert "rest" in terms
+
+    def test_integration_excerpt_differs_between_files(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(tmp_project))
+        result = adapter.run_search("GraphQL database", n_results=50)
+        assert result.ok
+        if len(result.groups) >= 2:
+            e1 = result.groups[0].excerpt()
+            e2 = result.groups[1].excerpt()
+            assert e1 != e2 or len(result.groups) == 1

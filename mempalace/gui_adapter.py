@@ -267,6 +267,53 @@ def _informative_snippet(text: str, max_len: int = 80) -> str:
     return best
 
 
+def _query_excerpt(text: str, query: str, max_len: int = 80) -> str:
+    """Pick the line from *text* most relevant to *query*.
+
+    Scoring: each query token that appears in a line (case-insensitive)
+    adds +1 to that line's score.  Among lines with score > 0, pick the
+    highest-scoring longest line.  If no line matches any query token,
+    fall back to _informative_snippet().
+    """
+    query_terms = set(_tokenize(query))
+    if not query_terms:
+        return _informative_snippet(text, max_len)
+
+    best_line = ""
+    best_score = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or len(stripped) < 5:
+            continue
+        lower = stripped.lower()
+        score = sum(1 for t in query_terms if t in lower)
+        if score > best_score or (score == best_score and score > 0 and len(stripped) > len(best_line)):
+            best_score = score
+            best_line = stripped
+
+    if best_score == 0:
+        return _informative_snippet(text, max_len)
+
+    if len(best_line) > max_len:
+        # Try to center the excerpt around the first matching term
+        for t in sorted(query_terms, key=lambda x: best_line.lower().find(x)):
+            idx = best_line.lower().find(t)
+            if idx >= 0:
+                start = max(0, idx - 20)
+                end = min(len(best_line), start + max_len - 3)
+                best_line = ("..." if start > 0 else "") + best_line[start:end] + "..."
+                break
+        else:
+            best_line = best_line[:max_len - 3] + "..."
+    return best_line
+
+
+def _tokenize(text: str) -> list:
+    """Lowercase + strip to alphanumeric tokens of length >= 2."""
+    import re as _re
+    return _re.findall(r"\w{2,}", text.lower())
+
+
 @dataclass
 class SearchFileGroup:
     """Aggregated search result for one source file.
@@ -279,6 +326,7 @@ class SearchFileGroup:
     source_file: str
     best_hit: SearchHit
     extra_hits: List[SearchHit] = field(default_factory=list)
+    query: str = ""
 
     @property
     def all_hits(self) -> List[SearchHit]:
@@ -296,12 +344,78 @@ class SearchFileGroup:
         """
         return _informative_snippet(self.best_hit.text, max_len)
 
+    def excerpt(self, max_len: int = 80) -> str:
+        """Return the query-relevant excerpt — the line most related to the query.
+
+        Unlike snippet() which picks the most informative line generically,
+        excerpt() picks the line that best matches the search query terms.
+        Falls back to snippet() if no query-relevant line is found.
+        """
+        if self.query:
+            return _query_excerpt(self.best_hit.text, self.query, max_len)
+        return self.snippet(max_len)
+
+    def excerpt_for_chunk(self, chunk_index: int, max_len: int = 80) -> str:
+        """Return query-relevant excerpt for a specific chunk."""
+        hits = self.all_hits
+        if 0 <= chunk_index < len(hits):
+            if self.query:
+                return _query_excerpt(hits[chunk_index].text, self.query, max_len)
+            return _informative_snippet(hits[chunk_index].text, max_len)
+        return ""
+
     def snippet_for_chunk(self, chunk_index: int, max_len: int = 80) -> str:
         """Return snippet for a specific chunk within this group."""
         hits = self.all_hits
         if 0 <= chunk_index < len(hits):
             return _informative_snippet(hits[chunk_index].text, max_len)
         return ""
+
+    def why_matched(self) -> str:
+        """Human-readable explanation of why this file matched.
+
+        Returns a short string like:
+          'Semantic match: 2 query terms found · sim 0.83 · L10–15'
+        or for weak matches:
+          'Weak semantic match · sim 0.31 · chunk 3'
+        """
+        hit = self.best_hit
+        parts = []
+
+        # Count matching query terms in text
+        if self.query:
+            terms = set(_tokenize(self.query))
+            text_lower = hit.text.lower()
+            found = [t for t in terms if t in text_lower]
+            if found:
+                parts.append(f"{len(found)} query term{'s' if len(found) != 1 else ''} found ({', '.join(found[:4])})")
+            else:
+                parts.append("Semantic match (no exact keywords)")
+
+        # Similarity / strength
+        if hit.similarity is not None:
+            if hit.similarity >= 0.6:
+                parts.append("strong match")
+            elif hit.similarity >= 0.3:
+                parts.append("moderate match")
+            else:
+                parts.append("weak match")
+            parts.append(f"sim {hit.similarity:.2f}")
+
+        # Location
+        loc = self.location_label()
+        if loc:
+            parts.append(loc)
+
+        return " · ".join(parts)
+
+    def matched_terms(self) -> List[str]:
+        """Return query terms that appear in the best hit's text."""
+        if not self.query:
+            return []
+        terms = set(_tokenize(self.query))
+        text_lower = self.best_hit.text.lower()
+        return sorted(t for t in terms if t in text_lower)
 
     def location_label(self) -> str:
         hit = self.best_hit
@@ -772,7 +886,7 @@ class MemPalaceAdapter:
 
         hits = [SearchHit.from_dict(h) for h in enriched]
         self._compute_line_ranges(hits)
-        groups = self._aggregate_hits(hits)
+        groups = self._aggregate_hits(hits, query=query)
         return SearchResult(
             ok=True,
             query=raw.get("query", query),
@@ -865,7 +979,7 @@ class MemPalaceAdapter:
                 pass
 
     @staticmethod
-    def _aggregate_hits(hits: List[SearchHit]) -> List[SearchFileGroup]:
+    def _aggregate_hits(hits: List[SearchHit], query: str = "") -> List[SearchFileGroup]:
         """Group chunk-level hits by source_path, keeping the best per file.
 
         The backend returns one SearchHit per chunk (drawer).  When a file
@@ -882,6 +996,8 @@ class MemPalaceAdapter:
             position — i.e. if the first 3 raw hits all belong to file A,
             file A's group is first.
           * If a file has only one hit, extra_hits is empty.
+          * The *query* string is forwarded to each group so it can
+            compute query-relevant excerpts and match explanations.
         """
         if not hits:
             return []
@@ -905,6 +1021,7 @@ class MemPalaceAdapter:
                 source_file=best.source_file or "?",
                 best_hit=best,
                 extra_hits=extras,
+                query=query,
             ))
         return groups
 
