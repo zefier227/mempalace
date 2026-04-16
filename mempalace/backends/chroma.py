@@ -20,6 +20,11 @@ def _fix_blob_seq_ids(palace_path: str):
     type INTEGER) is not compatible with SQL type BLOB".
 
     Must run BEFORE PersistentClient is created (the compactor fires on init).
+
+    This function is safe to call even on fresh 1.5.x databases — it scans
+    for BLOB rows and skips immediately if none are found (the common case).
+    The WHERE typeof(seq_id)='blob' filter makes it a no-op on INTEGER-native
+    databases at near-zero cost.
     """
     db_path = os.path.join(palace_path, "chroma.sqlite3")
     if not os.path.isfile(db_path):
