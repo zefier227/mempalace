@@ -754,3 +754,133 @@ class TestPostMineStatusRefresh:
         result = adapter.run_search("GraphQL")
         assert result.ok
         assert len(result.hits) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 12. Palace path switching
+# ---------------------------------------------------------------------------
+
+
+class TestPalaceSwitching:
+    """switch_palace must change the active palace and allow operations on it."""
+
+    def test_switch_changes_palace_path(self, tmp_path):
+        palace_a = tmp_path / "palace_a"
+        palace_a.mkdir()
+        palace_b = tmp_path / "palace_b"
+        palace_b.mkdir()
+        adapter = MemPalaceAdapter(palace_path=str(palace_a))
+        assert adapter.palace_path == str(palace_a)
+        adapter.switch_palace(str(palace_b))
+        assert adapter.palace_path == str(palace_b)
+
+    def test_switch_same_path_is_noop(self, tmp_path):
+        palace = tmp_path / "palace"
+        palace.mkdir()
+        adapter = MemPalaceAdapter(palace_path=str(palace))
+        path_before = adapter.palace_path
+        adapter.switch_palace(str(palace))
+        assert adapter.palace_path == path_before
+
+    def test_search_after_switch_uses_new_palace(self, tmp_path):
+        palace_a = tmp_path / "palace_a"
+        palace_a.mkdir()
+        palace_b = tmp_path / "palace_b"
+        palace_b.mkdir()
+        proj = tmp_path / "project"
+        proj.mkdir()
+        (proj / "test.txt").write_text("Alpha palace content about databases.")
+
+        adapter = MemPalaceAdapter(palace_path=str(palace_a))
+        adapter.run_mine_projects(str(proj))
+
+        adapter.switch_palace(str(palace_b))
+        result = adapter.run_search("databases")
+        assert result.ok is False or len(result.hits) == 0
+
+    def test_mine_after_switch_populates_new_palace(self, tmp_path):
+        palace_a = tmp_path / "palace_a"
+        palace_a.mkdir()
+        palace_b = tmp_path / "palace_b"
+        palace_b.mkdir()
+        proj = tmp_path / "project_switch"
+        proj.mkdir()
+        (proj / "switch_test.txt").write_text(
+            "Bravo palace content about architecture and Redis caching."
+        )
+
+        adapter = MemPalaceAdapter(palace_path=str(palace_a))
+        adapter.switch_palace(str(palace_b))
+        mine_result = adapter.run_mine_projects(str(proj))
+        assert mine_result.ok, f"Mine failed: {mine_result.error}"
+        assert mine_result.drawers_filed >= 1
+
+        status = adapter.run_status()
+        assert status.ok
+        assert status.total_drawers >= 1
+
+        result = adapter.run_search("architecture")
+        assert result.ok
+        assert len(result.hits) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 13. Relevance threshold / no-results
+# ---------------------------------------------------------------------------
+
+
+class TestSearchRelevanceThreshold:
+    """max_distance must filter weak results and produce honest no-results."""
+
+    def test_strict_threshold_fewer_results(self, adapter_mined):
+        loose = adapter_mined.run_search("project", max_distance=1.5)
+        strict = adapter_mined.run_search("project", max_distance=0.5)
+        assert len(strict.hits) <= len(loose.hits)
+
+    def test_nonsense_query_returns_empty_with_threshold(self, adapter_mined):
+        result = adapter_mined.run_search(
+            "zzzzxkcd_unique_no_match_99999",
+            max_distance=0.5,
+        )
+        assert result.ok is True
+        assert len(result.hits) == 0
+
+    def test_zero_threshold_shows_all(self, adapter_mined):
+        result_strict = adapter_mined.run_search("GraphQL", max_distance=0.5)
+        result_all = adapter_mined.run_search("GraphQL", max_distance=0.0)
+        assert len(result_all.hits) >= len(result_strict.hits)
+
+    def test_semantic_query_preserves_hits(self, adapter_mined):
+        result = adapter_mined.run_search("GraphQL REST API", max_distance=1.0)
+        assert result.ok
+        assert len(result.hits) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 14. Line range in search hits
+# ---------------------------------------------------------------------------
+
+
+class TestLineRangeInSearchHits:
+    """SearchHit.line_start/line_end must be populated for text files."""
+
+    def test_line_range_populated_for_text_file(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(tmp_project))
+        result = adapter.run_search("GraphQL")
+        assert result.ok
+        assert len(result.hits) >= 1
+        hit = result.hits[0]
+        if hit.source_path and Path(hit.source_path).is_file():
+            assert hit.line_start is not None
+            assert hit.line_end is not None
+            assert hit.line_start >= 1
+
+    def test_line_range_fallback_chunk_index(self, tmp_palace, tmp_project):
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(tmp_project))
+        result = adapter.run_search("GraphQL")
+        assert result.ok
+        for hit in result.hits:
+            if hit.line_start is None:
+                assert hit.chunk_index is not None or hit.source_path == ""

@@ -53,6 +53,7 @@ or direct slot connection.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot, QTimer
@@ -139,18 +140,21 @@ class _SearchWorker(_Worker):
     finished = Signal(object)   # SearchResult
 
     def __init__(self, adapter: MemPalaceAdapter, query: str,
-                 wing: Optional[str], n_results: int, parent=None):
+                 wing: Optional[str], n_results: int,
+                 max_distance: float, parent=None):
         super().__init__(parent)
         self._adapter = adapter
         self._query = query
         self._wing = wing
         self._n_results = n_results
+        self._max_distance = max_distance
 
     def run(self):
         result = self._adapter.run_search(
             self._query,
             wing=self._wing,
             n_results=self._n_results,
+            max_distance=self._max_distance,
         )
         self.finished.emit(result)
 
@@ -188,6 +192,7 @@ class QtController(QObject):
     search_finished = Signal(object)   # SearchResult
     busy_changed    = Signal(bool)
     error           = Signal(str)
+    palace_switched = Signal(str)      # new palace path
 
     def __init__(self, palace_path: Optional[str] = None, parent=None):
         super().__init__(parent)
@@ -214,11 +219,20 @@ class QtController(QObject):
         self,
         project_dir: Optional[str] = None,
         auto_detect_rooms: bool = False,
+        palace_path: Optional[str] = None,
     ) -> None:
-        """Initialise the palace (non-blocking)."""
+        """Initialise the palace (non-blocking).
+
+        If palace_path is provided the adapter is switched to that path
+        before init runs.  This allows the Init panel to change the active
+        palace without a separate switch_palace call.
+        """
         if self._busy:
             self.error.emit("Another operation is in progress. Please wait.")
             return
+        if palace_path and palace_path != self._adapter.palace_path:
+            self._adapter.switch_palace(palace_path)
+            self.palace_switched.emit(self._adapter.palace_path)
         self._set_busy(True)
         w = _InitWorker(self._adapter, project_dir, auto_detect_rooms, parent=self)
         w.finished.connect(self._on_init_done)
@@ -259,6 +273,7 @@ class QtController(QObject):
         query: str,
         wing: Optional[str] = None,
         n_results: int = 50,
+        max_distance: float = 1.0,
     ) -> None:
         """Run a search (non-blocking). Ignores if busy."""
         if not query.strip():
@@ -267,7 +282,8 @@ class QtController(QObject):
             self.error.emit("Another operation is in progress. Please wait.")
             return
         self._set_busy(True)
-        w = _SearchWorker(self._adapter, query, wing, n_results, parent=self)
+        w = _SearchWorker(self._adapter, query, wing, n_results,
+                          max_distance, parent=self)
         w.finished.connect(self._on_search_done)
         w.finished.connect(w.deleteLater)
         self._search_worker = w
@@ -331,3 +347,19 @@ class QtController(QObject):
     def palace_exists(self) -> dict:
         """Synchronous utility — cheap, safe to call from main thread."""
         return MemPalaceAdapter.check_palace_exists(self._adapter.palace_path)
+
+    def switch_palace(self, new_path: str) -> None:
+        """Switch to a different palace path (non-blocking safe).
+
+        Creates a new adapter for the new path, invalidates the old chroma
+        client, and emits palace_switched so panels can reset their state.
+        Must NOT be called while busy.
+        """
+        if self._busy:
+            self.error.emit("Cannot switch palace while an operation is running.")
+            return
+        new_resolved = str(Path(new_path).expanduser().resolve())
+        if new_resolved == self._adapter.palace_path:
+            return
+        self._adapter.switch_palace(new_resolved)
+        self.palace_switched.emit(self._adapter.palace_path)

@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QSplitter,
     QStatusBar,
@@ -106,7 +107,6 @@ class InitPanel(QWidget):
         path_row = QHBoxLayout()
         path_row.addWidget(_label("Palace path:"))
         self._path_edit = QLineEdit(self._ctrl.palace_path)
-        self._path_edit.setReadOnly(True)
         self._path_edit.setPlaceholderText("~/.mempalace/palace")
         path_row.addWidget(self._path_edit, 1)
         browse_btn = QPushButton("Browse...")
@@ -149,6 +149,11 @@ class InitPanel(QWidget):
         # Wire controller signals
         self._ctrl.init_finished.connect(self._on_init_done)
         self._ctrl.busy_changed.connect(self._on_busy)
+        self._ctrl.palace_switched.connect(self._on_palace_switched)
+
+    @Slot(str)
+    def _on_palace_switched(self, new_path: str):
+        self._path_edit.setText(new_path)
 
     def _browse_palace(self):
         d = QFileDialog.getExistingDirectory(self, "Select palace directory",
@@ -166,14 +171,17 @@ class InitPanel(QWidget):
         project_dir = None
         if self._auto_detect_cb.isChecked() and self._project_edit.text().strip():
             project_dir = self._project_edit.text().strip()
+        palace_path = self._path_edit.text().strip() or None
         self._ctrl.request_init(
             project_dir=project_dir,
             auto_detect_rooms=self._auto_detect_cb.isChecked(),
+            palace_path=palace_path,
         )
 
     @Slot(object)
     def _on_init_done(self, result: InitResult):
         if result.ok:
+            self._path_edit.setText(result.palace_path)
             self._status_lbl.setText(
                 "Palace initialised.\n"
                 f"Path: {result.palace_path}\n\n"
@@ -463,6 +471,23 @@ class SearchPanel(QWidget):
         max_row.addStretch()
         root.addLayout(max_row)
 
+        # Relevance threshold row
+        threshold_row = QHBoxLayout()
+        threshold_row.addWidget(_label("Min relevance:"))
+        self._threshold_slider = QSlider(Qt.Horizontal)
+        self._threshold_slider.setRange(0, 100)
+        self._threshold_slider.setValue(0)
+        self._threshold_slider.setToolTip(
+            "Filter out low-relevance results. 0 = show all, "
+            "higher = stricter (distance-based cutoff)"
+        )
+        threshold_row.addWidget(self._threshold_slider)
+        self._threshold_lbl = _label("any")
+        self._threshold_lbl.setFixedWidth(40)
+        threshold_row.addWidget(self._threshold_lbl)
+        self._threshold_slider.valueChanged.connect(self._on_threshold_changed)
+        root.addLayout(threshold_row)
+
         # Splitter: results list | preview
         splitter = QSplitter(Qt.Horizontal)
 
@@ -515,6 +540,16 @@ class SearchPanel(QWidget):
         # Wire signals
         self._ctrl.search_finished.connect(self._on_search_done)
         self._ctrl.busy_changed.connect(self._on_busy)
+        self._ctrl.palace_switched.connect(self._on_palace_switched)
+
+    def _on_palace_switched(self, new_path: str):
+        self._results_list.clear()
+        self._preview.clear()
+        self._meta_lbl.clear()
+        self._hits = []
+        self._result_count_lbl.setText("No results")
+        self._show_more_btn.setVisible(False)
+        self._empty_lbl.setVisible(True)
 
     def _do_search(self):
         q = self._query_edit.text().strip()
@@ -522,10 +557,26 @@ class SearchPanel(QWidget):
             return
         wing = self._wing_edit.text().strip() or None
         n = self._n_results_spin.value()
+        max_dist = self._threshold_to_distance()
         self._last_query = q
         self._last_wing = wing
         self._last_n_results = n
-        self._ctrl.request_search(q, wing=wing, n_results=n)
+        self._ctrl.request_search(q, wing=wing, n_results=n,
+                                  max_distance=max_dist)
+
+    def _on_threshold_changed(self, value: int):
+        if value == 0:
+            self._threshold_lbl.setText("any")
+        else:
+            dist = 2.0 - (value / 100.0) * 2.0
+            sim = max(0.0, 1.0 - dist)
+            self._threshold_lbl.setText(f">{sim:.1f}")
+
+    def _threshold_to_distance(self) -> float:
+        v = self._threshold_slider.value()
+        if v == 0:
+            return 0.0
+        return 2.0 - (v / 100.0) * 2.0
 
     def _on_show_more(self):
         if not self._last_query:
@@ -536,6 +587,7 @@ class SearchPanel(QWidget):
             self._last_query,
             wing=self._last_wing,
             n_results=self._last_n_results,
+            max_distance=self._threshold_to_distance(),
         )
 
     @Slot(object)
@@ -607,6 +659,13 @@ class SearchPanel(QWidget):
             f"Room: {hit.room}",
             f"File: {hit.source_file}",
         ]
+        if hit.line_start is not None and hit.line_end is not None:
+            if hit.line_start == hit.line_end:
+                meta_parts.append(f"Line: {hit.line_start}")
+            else:
+                meta_parts.append(f"Lines: {hit.line_start}–{hit.line_end}")
+        elif hit.chunk_index is not None:
+            meta_parts.append(f"Chunk: {hit.chunk_index}")
         if hit.similarity is not None:
             meta_parts.append(f"Similarity: {hit.similarity:.3f}")
         if hit.matched_via:
@@ -615,8 +674,6 @@ class SearchPanel(QWidget):
             meta_parts.append(f"Path: {hit.source_path}")
         if hit.drawer_id:
             meta_parts.append(f"Drawer: {hit.drawer_id}")
-        if hit.chunk_index is not None:
-            meta_parts.append(f"Chunk: {hit.chunk_index}")
         self._meta_lbl.setText("  |  ".join(meta_parts))
 
     @Slot(bool)
@@ -670,8 +727,13 @@ class MainWindow(QMainWindow):
     def _wire_signals(self):
         self._ctrl.error.connect(self._show_error)
         self._ctrl.busy_changed.connect(self._on_busy)
-        # After mine completes, jump to Status tab so user sees the update.
         self._ctrl.mine_finished.connect(self._on_mine_finished)
+        self._ctrl.palace_switched.connect(self._on_palace_switched)
+
+    @Slot(str)
+    def _on_palace_switched(self, new_path: str):
+        self.setWindowTitle(f"MemPalace — {new_path}")
+        self._statusbar.showMessage(f"Palace: {new_path}")
 
     @Slot(str)
     def _show_error(self, msg: str):

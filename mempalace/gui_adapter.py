@@ -202,19 +202,24 @@ class SearchHit:
       drawer_id     ChromaDB document ID — stable reference for get_drawer calls.
       chunk_index   Zero-based chunk index within source_file (for pagination UI).
       closet_preview  First 200 chars of the closet entry that boosted this hit,
-                      or None if this was a pure drawer (non-closet) match.
+                       or None if this was a pure drawer (non-closet) match.
+      line_start / line_end  1-based line range within the source file where
+                    the chunk text occurs.  None when the file is not readable
+                    or the text cannot be located (binary file, file deleted, etc.).
     """
     text: str
     wing: str
     room: str
-    source_file: str               # basename — for display
-    source_path: str               # full absolute path — for "open in editor"
+    source_file: str
+    source_path: str
     similarity: float
     distance: float
     matched_via: str = "drawer"
     drawer_id: str = ""
     chunk_index: Optional[int] = None
     closet_preview: Optional[str] = None
+    line_start: Optional[int] = None
+    line_end: Optional[int] = None
 
     @classmethod
     def from_dict(cls, d: dict, drawer_id: str = "") -> "SearchHit":
@@ -230,6 +235,8 @@ class SearchHit:
             drawer_id=drawer_id or d.get("drawer_id", ""),
             chunk_index=d.get("chunk_index"),
             closet_preview=d.get("closet_preview"),
+            line_start=d.get("line_start"),
+            line_end=d.get("line_end"),
         )
 
 
@@ -511,6 +518,22 @@ class MemPalaceAdapter:
     def palace_path(self) -> str:
         return self._palace_path
 
+    def switch_palace(self, new_path: str) -> str:
+        """Switch the adapter to a different palace path.
+
+        Stops the MCP server if running, invalidates the cached ChromaDB
+        client for the old path, and updates the internal palace_path.
+
+        Returns the new palace path.
+        """
+        if new_path == self._palace_path:
+            return self._palace_path
+        self.stop_mcp_server()
+        _invalidate_chroma_client(self._palace_path)
+        self._palace_path = str(Path(new_path).expanduser().resolve())
+        logger.info("Switched palace: %s", self._palace_path)
+        return self._palace_path
+
     # ------------------------------------------------------------------
     # _child_env — build isolated subprocess environment
     # ------------------------------------------------------------------
@@ -621,7 +644,7 @@ class MemPalaceAdapter:
         wing: Optional[str] = None,
         room: Optional[str] = None,
         n_results: int = 5,
-        max_distance: float = 1.5,
+        max_distance: float = 1.0,
     ) -> SearchResult:
         """Semantic search against the palace. Returns structured SearchResult.
 
@@ -638,7 +661,10 @@ class MemPalaceAdapter:
             room: Optional room filter.
             n_results: Max results to return.
             max_distance: Cosine distance cutoff (0=identical, 2=opposite).
-                          0.0 disables filtering.
+                          0.0 disables filtering. Practical thresholds:
+                            0.8 — strict (high relevance)
+                            1.0 — balanced (default, similarity > 0)
+                            1.5 — permissive (weak matches included)
 
         Returns:
             SearchResult with ok=True and hits list on success,
@@ -670,6 +696,7 @@ class MemPalaceAdapter:
         enriched = self._enrich_hits(raw.get("results", []))
 
         hits = [SearchHit.from_dict(h) for h in enriched]
+        self._compute_line_ranges(hits)
         return SearchResult(
             ok=True,
             query=raw.get("query", query),
@@ -704,6 +731,61 @@ class MemPalaceAdapter:
             h.setdefault("chunk_index", None)
             enriched.append(h)
         return enriched
+
+    @staticmethod
+    def _compute_line_ranges(hits: list) -> None:
+        """Populate line_start / line_end on hits where the source file exists.
+
+        For each hit whose source_path points to a readable text file, the
+        method attempts to locate the hit's chunk text within the file and
+        compute a 1-based line range.  If the text cannot be located (binary
+        file, file deleted, modified since mining, etc.) the fields remain
+        None — the caller can fall back to chunk_index for display.
+
+        The match strategy is:
+          1. Take the first distinctive line of the chunk (>= 20 chars, not
+             blank) as an anchor.
+          2. Scan the file for that anchor line.
+          3. From the anchor position, compute the line range by counting
+             the number of lines in the chunk text.
+
+        This is intentionally simple — IDE-level navigation is out of scope.
+        """
+        for hit in hits:
+            if not hit.source_path or hit.line_start is not None:
+                continue
+            try:
+                p = Path(hit.source_path)
+                if not p.is_file():
+                    continue
+                content = p.read_text(errors="replace")
+                if not content:
+                    continue
+                lines = content.splitlines()
+                chunk_lines = hit.text.splitlines()
+
+                anchor = None
+                anchor_offset = 0
+                for i, cl in enumerate(chunk_lines):
+                    stripped = cl.strip()
+                    if len(stripped) >= 20:
+                        anchor = stripped
+                        anchor_offset = i
+                        break
+                if not anchor:
+                    continue
+
+                for fi, fl in enumerate(lines):
+                    if anchor in fl:
+                        start = fi - anchor_offset + 1
+                        start = max(1, start)
+                        end = start + len(chunk_lines) - 1
+                        end = min(end, len(lines))
+                        hit.line_start = start
+                        hit.line_end = end
+                        break
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # run_status — captures stdout, returns structured PalaceStatus
