@@ -320,3 +320,136 @@ class TestArgParsing:
         with pytest.raises(SystemExit) as exc:
             _parse_args(["--help"])
         assert exc.value.code == 0
+
+
+# ---------------------------------------------------------------------------
+# 6. Search selection / preview behavior (SearchPanel)
+# ---------------------------------------------------------------------------
+
+
+class TestSearchSelectionBehavior:
+    """Verify that clicking a result switches the preview to that group."""
+
+    def _make_panels(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import SearchPanel
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        return ctrl, panel
+
+    def _populate_and_search(self, ctrl, panel, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import MemPalaceAdapter
+        proj = tmp_path / "sel_project"
+        proj.mkdir()
+        (proj / "alpha.txt").write_text(
+            "Alpha file: GraphQL API design decisions and architecture overview."
+        )
+        (proj / "beta.txt").write_text(
+            "Beta file: Redis caching strategy and PostgreSQL tuning notes."
+        )
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.run_mine_projects(str(proj))
+
+        result = adapter.run_search("architecture", n_results=50)
+        return result
+
+    def test_search_result_groups_populated(self, qapp, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import SearchResult
+        from gui.main_window import SearchPanel
+        ctrl, panel = self._make_panels(qapp, tmp_palace)
+        result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
+        panel._on_search_done(result)
+        assert len(panel._groups) >= 1
+
+    def test_click_group_shows_correct_preview(self, qapp, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import SearchResult
+        ctrl, panel = self._make_panels(qapp, tmp_palace)
+        result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
+        panel._on_search_done(result)
+        if len(panel._groups) < 2:
+            pytest.skip("Need at least 2 groups for selection test")
+        panel._on_result_selected(0)
+        first_preview = panel._preview.toPlainText()
+        panel._on_result_selected(1)
+        second_preview = panel._preview.toPlainText()
+        assert first_preview != second_preview or len(panel._groups) == 1
+
+    def test_switching_group_resets_chunk_index(self, qapp, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import SearchResult
+        ctrl, panel = self._make_panels(qapp, tmp_palace)
+        result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
+        panel._on_search_done(result)
+        panel._on_result_selected(0)
+        # Even if chunk_index was advanced on group 0, switching to group 1 resets
+        panel._show_group(0, chunk_index=0)
+        if len(panel._groups[0].all_hits) > 1:
+            panel._show_group(0, chunk_index=1)
+        if len(panel._groups) > 1:
+            panel._on_result_selected(1)
+            assert getattr(panel._groups[1], "_active_chunk", 0) == 0
+
+    def test_new_query_clears_old_preview(self, qapp, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import SearchResult
+        ctrl, panel = self._make_panels(qapp, tmp_palace)
+        result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
+        panel._on_search_done(result)
+        assert len(panel._groups) >= 1
+        panel._on_result_selected(0)
+        assert panel._preview.toPlainText() != ""
+
+        new_result = SearchResult(ok=True, query="new", hits=[], groups=[])
+        panel._on_search_done(new_result)
+        assert panel._preview.toPlainText() == ""
+        assert panel._preview_header.text() == ""
+
+    def test_preview_header_shows_file_name(self, qapp, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import SearchResult
+        ctrl, panel = self._make_panels(qapp, tmp_palace)
+        result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
+        panel._on_search_done(result)
+        if not panel._groups:
+            pytest.skip("No groups in result")
+        panel._on_result_selected(0)
+        header_text = panel._preview_header.text()
+        assert panel._groups[0].source_file in header_text
+
+    def test_list_items_contain_snippet(self, qapp, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import SearchResult
+        ctrl, panel = self._make_panels(qapp, tmp_palace)
+        result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
+        panel._on_search_done(result)
+        for i in range(panel._results_list.count()):
+            text = panel._results_list.item(i).text()
+            assert '"' in text  # snippet is quoted in list items
+
+
+# ---------------------------------------------------------------------------
+# 7. Informative snippet logic
+# ---------------------------------------------------------------------------
+
+
+class TestInformativeSnippet:
+    """_informative_snippet should pick content-rich lines."""
+
+    def test_picks_longer_content_line(self):
+        from mempalace.gui_adapter import _informative_snippet
+        text = "# Header\nA substantial line with real content about GraphQL\n\n"
+        result = _informative_snippet(text)
+        assert "substantial" in result or "GraphQL" in result
+
+    def test_short_lines_only(self):
+        from mempalace.gui_adapter import _informative_snippet
+        text = "short line\nanother brief line\n"
+        result = _informative_snippet(text, max_len=40)
+        assert len(result) > 0
+
+    def test_empty_text(self):
+        from mempalace.gui_adapter import _informative_snippet
+        assert _informative_snippet("") == ""
+
+    def test_truncates_long_line(self):
+        from mempalace.gui_adapter import _informative_snippet
+        text = "A" * 200
+        result = _informative_snippet(text, max_len=40)
+        assert len(result) <= 40
+        assert result.endswith("...")

@@ -511,7 +511,16 @@ class SearchPanel(QWidget):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addWidget(_label("Preview"))
+
+        # Preview header — makes it obvious which file/chunk you're looking at
+        self._preview_header = QLabel("")
+        self._preview_header.setWordWrap(True)
+        self._preview_header.setStyleSheet(
+            "font-size: 13px; font-weight: bold; color: #222; "
+            "padding: 4px 6px; background: #f0f0f0; border-radius: 3px;"
+        )
+        right_layout.addWidget(self._preview_header)
+
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
         self._preview.setFont(_MONO)
@@ -563,6 +572,7 @@ class SearchPanel(QWidget):
     def _on_palace_switched(self, new_path: str):
         self._results_list.clear()
         self._preview.clear()
+        self._preview_header.clear()
         self._meta_lbl.clear()
         self._chunk_nav_lbl.clear()
         self._prev_chunk_btn.setVisible(False)
@@ -615,6 +625,7 @@ class SearchPanel(QWidget):
     def _on_search_done(self, result: SearchResult):
         self._results_list.clear()
         self._preview.clear()
+        self._preview_header.clear()
         self._meta_lbl.clear()
         self._chunk_nav_lbl.clear()
         self._prev_chunk_btn.setVisible(False)
@@ -661,18 +672,23 @@ class SearchPanel(QWidget):
 
         for i, group in enumerate(self._groups):
             hit = group.best_hit
-            snippet = group.snippet(70)
+            snippet = group.snippet(60)
             loc = group.location_label()
-            sim_str = f"{hit.similarity:.2f}" if hit.similarity is not None else "n/a"
+            sim_str = f"{hit.similarity:.2f}" if hit.similarity is not None else ""
 
-            label = f"[{i + 1}] {group.source_file}"
+            # Line 1: file + location + similarity
+            line1 = f"[{i + 1}]  {group.source_file}"
             if loc:
-                label += f"  |  {loc}"
-            label += f"  |  sim={sim_str}\n    {snippet}"
-            if group.hit_count > 1:
-                label += f"\n    +{len(group.extra_hits)} more chunk{'s' if len(group.extra_hits) != 1 else ''} in this file"
+                line1 += f"  ·  {loc}"
+            if sim_str:
+                line1 += f"  ·  sim {sim_str}"
 
-            item = QListWidgetItem(label)
+            # Line 2: distinguishing snippet (use · separator, no \n)
+            line2 = f"       \"{snippet}\""
+            if group.hit_count > 1:
+                line2 += f"  [+{len(group.extra_hits)} more]"
+
+            item = QListWidgetItem(f"{line1}\n{line2}")
             item.setData(Qt.UserRole, i)
             self._results_list.addItem(item)
 
@@ -694,30 +710,37 @@ class SearchPanel(QWidget):
         hit = hits[chunk_index]
         self._preview.setPlainText(hit.text)
 
+        # Preview header — bold file + chunk info
+        header_parts = [group.source_file]
+        if hit.line_start is not None and hit.line_end is not None:
+            if hit.line_start == hit.line_end:
+                header_parts.append(f"Line {hit.line_start}")
+            else:
+                header_parts.append(f"Lines {hit.line_start}–{hit.line_end}")
+        elif hit.chunk_index is not None:
+            header_parts.append(f"Chunk {hit.chunk_index}")
+        if len(hits) > 1:
+            header_parts.append(f"({chunk_index + 1}/{len(hits)} chunks)")
+        self._preview_header.setText("  ·  ".join(header_parts))
+
         meta_parts = [
             f"Wing: {hit.wing}",
             f"Room: {hit.room}",
-            f"File: {group.source_file}",
         ]
-        if hit.line_start is not None and hit.line_end is not None:
-            if hit.line_start == hit.line_end:
-                meta_parts.append(f"Line: {hit.line_start}")
-            else:
-                meta_parts.append(f"Lines: {hit.line_start}–{hit.line_end}")
-        elif hit.chunk_index is not None:
-            meta_parts.append(f"Chunk: {hit.chunk_index}")
-        if hit.similarity is not None:
-            meta_parts.append(f"Similarity: {hit.similarity:.3f}")
         if hit.source_path:
             meta_parts.append(f"Path: {hit.source_path}")
+        if hit.similarity is not None:
+            meta_parts.append(f"Similarity: {hit.similarity:.3f}")
         if hit.drawer_id:
             meta_parts.append(f"Drawer: {hit.drawer_id}")
         self._meta_lbl.setText("  |  ".join(meta_parts))
 
         if len(hits) > 1:
-            self._chunk_nav_lbl.setText(
-                f"Chunk {chunk_index + 1} of {len(hits)} in {group.source_file}"
-            )
+            chunk_snippet = group.snippet_for_chunk(chunk_index, 50)
+            nav_text = f"Chunk {chunk_index + 1}/{len(hits)}"
+            if chunk_snippet:
+                nav_text += f": \"{chunk_snippet}\""
+            self._chunk_nav_lbl.setText(nav_text)
             self._prev_chunk_btn.setVisible(chunk_index > 0)
             self._next_chunk_btn.setVisible(chunk_index < len(hits) - 1)
             self._prev_chunk_btn.setEnabled(chunk_index > 0)

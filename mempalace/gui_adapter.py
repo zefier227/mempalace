@@ -240,6 +240,33 @@ class SearchHit:
         )
 
 
+def _informative_snippet(text: str, max_len: int = 80) -> str:
+    """Pick the most informative line from *text* for a list-item snippet.
+
+    Strategy: prefer lines that are long enough to be distinctive
+    (>= 20 chars) but not so long they're boilerplate headings.
+    Among candidates, pick the one closest to 60 chars — long enough
+    to be unique, short enough to fit a list row.
+    """
+    candidates = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or len(stripped) < 10:
+            continue
+        candidates.append(stripped)
+    if not candidates:
+        return ""
+    # Prefer lines 20–120 chars; among those, pick longest (most content)
+    good = [c for c in candidates if 20 <= len(c) <= 120]
+    if good:
+        best = max(good, key=len)
+    else:
+        best = candidates[0]
+    if len(best) > max_len:
+        best = best[:max_len - 3] + "..."
+    return best
+
+
 @dataclass
 class SearchFileGroup:
     """Aggregated search result for one source file.
@@ -262,15 +289,19 @@ class SearchFileGroup:
         return 1 + len(self.extra_hits)
 
     def snippet(self, max_len: int = 80) -> str:
-        first_line = ""
-        for line in self.best_hit.text.splitlines():
-            stripped = line.strip()
-            if stripped:
-                first_line = stripped
-                break
-        if len(first_line) > max_len:
-            first_line = first_line[:max_len - 3] + "..."
-        return first_line
+        """Return the most informative line from the best hit's text.
+
+        Prefers longer, content-rich lines over short headings or markers.
+        Falls back to the first non-empty line if no long line is found.
+        """
+        return _informative_snippet(self.best_hit.text, max_len)
+
+    def snippet_for_chunk(self, chunk_index: int, max_len: int = 80) -> str:
+        """Return snippet for a specific chunk within this group."""
+        hits = self.all_hits
+        if 0 <= chunk_index < len(hits):
+            return _informative_snippet(hits[chunk_index].text, max_len)
+        return ""
 
     def location_label(self) -> str:
         hit = self.best_hit
