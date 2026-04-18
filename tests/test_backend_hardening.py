@@ -256,13 +256,13 @@ class TestSearchAfterMine:
         assert hit.source_file, "source_file should not be empty after mine"
 
     def test_search_hit_has_no_removed_fields(self, isolated_palace, simple_project):
-        """SearchHit must NOT have source_path, drawer_id, chunk_index (removed in parity fix)."""
+        """SearchHit must NOT have drawer_id, chunk_index; source_path is present for file-level actions."""
         adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
         adapter.run_mine_projects(str(simple_project))
         search = adapter.run_search("PostgreSQL")
         assert search.ok and search.hits
         hit = search.hits[0]
-        assert not hasattr(hit, "source_path"), "source_path was removed for CLI parity"
+        assert hasattr(hit, "source_path"), "source_path must be present for file-level actions"
         assert not hasattr(hit, "drawer_id"), "drawer_id was removed for CLI parity"
         assert not hasattr(hit, "chunk_index"), "chunk_index was removed for CLI parity"
 

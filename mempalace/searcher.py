@@ -247,13 +247,15 @@ def search_raw(
     hits = []
     for doc, meta, dist in zip(docs, metas, dists):
         similarity = round(max(0.0, 1 - dist), 3)
-        source = Path(meta.get("source_file", "?")).name
+        source_full = meta.get("source_file", "")
+        source = Path(source_full).name if source_full else "?"
         hits.append(
             {
                 "text": doc,
                 "wing": meta.get("wing", "?"),
                 "room": meta.get("room", "?"),
                 "source_file": source,
+                "source_path": source_full,
                 "distance": round(dist, 4),
                 "similarity": similarity,
             }

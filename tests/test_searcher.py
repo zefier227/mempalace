@@ -52,7 +52,7 @@ class TestSearchRaw:
         assert isinstance(hit["similarity"], float)
 
     def test_result_no_extra_fields(self, palace_path, seeded_collection):
-        """search_raw results must NOT have search_memories fields."""
+        """search_raw results must NOT have search_memories fields (except source_path for actions)."""
         result = search_raw("authentication", palace_path)
         hit = result["results"][0]
         for field in (
@@ -61,7 +61,6 @@ class TestSearchRaw:
             "bm25_score",
             "matched_via",
             "closet_preview",
-            "source_path",
             "chunk_index",
             "drawer_id",
             "_sort_key",
@@ -69,6 +68,7 @@ class TestSearchRaw:
             "_chunk_index",
         ):
             assert field not in hit, f"search_raw hit must not have '{field}'"
+        assert "source_path" in hit, "source_path must be present for file-level actions"
 
     def test_search_raw_query_error(self):
         """search_raw returns error dict when query raises."""

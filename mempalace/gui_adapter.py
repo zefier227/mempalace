@@ -196,12 +196,15 @@ class SearchHit:
     """One raw search result — mirrors exactly what CLI search() shows.
 
     Fields come straight from ChromaDB via search_raw() — raw search results only.
+    ``source_path`` is hidden metadata for actions (copy/compress file);
+    it is NOT displayed in the result list.
     """
 
     text: str
     wing: str
     room: str
     source_file: str
+    source_path: str
     similarity: float
     distance: float
 
@@ -212,6 +215,7 @@ class SearchHit:
             wing=d.get("wing", ""),
             room=d.get("room", ""),
             source_file=d.get("source_file", ""),
+            source_path=d.get("source_path", ""),
             similarity=float(d.get("similarity", 0.0)),
             distance=float(d.get("distance", 1.0)),
         )
@@ -318,6 +322,33 @@ class CompressResult:
     comp_tokens_est: int = 0
     compression_ratio: float = 0.0
     dry_run: bool = False
+    error: Optional[str] = None
+
+
+@dataclass
+class CompressTextResult:
+    """Result of compressing a single text fragment via Dialect.compress().
+
+    This is a per-text AAAK compression — NOT the wing-level compress
+    that iterates all drawers and stores to the compressed collection.
+    """
+
+    ok: bool
+    aaaK_text: str = ""
+    orig_tokens_est: int = 0
+    comp_tokens_est: int = 0
+    compression_ratio: float = 0.0
+    source_label: str = ""
+    error: Optional[str] = None
+
+
+@dataclass
+class SourceFileResult:
+    """Result of reading a source file from disk."""
+
+    ok: bool
+    text: str = ""
+    path: str = ""
     error: Optional[str] = None
 
 
@@ -893,6 +924,90 @@ class MemPalaceAdapter:
             compression_ratio=round(ratio, 1),
             dry_run=dry_run,
         )
+
+    # ------------------------------------------------------------------
+    # run_compress_text — AAAK compress a single text (hit or file)
+    # ------------------------------------------------------------------
+
+    def run_compress_text(
+        self,
+        text: str,
+        source_label: str = "",
+        wing: str = "",
+        room: str = "",
+    ) -> CompressTextResult:
+        """Compress a single text fragment to AAAK via Dialect.compress().
+
+        This is a per-text AAAK compression — NOT the wing-level compress
+        that iterates all drawers and stores to the compressed collection.
+        It does not store anything; it just returns the AAAK string.
+
+        Args:
+            text: The text to compress.
+            source_label: Human-readable label for the source (e.g. filename).
+            wing: Optional wing for metadata context.
+            room: Optional room for metadata context.
+
+        Returns:
+            CompressTextResult with AAAK text and compression stats.
+        """
+        try:
+            from .dialect import Dialect
+        except ImportError:
+            return CompressTextResult(ok=False, error="Cannot import Dialect")
+
+        try:
+            dialect = Dialect()
+            meta = {}
+            if source_label:
+                meta["source_file"] = source_label
+            if wing:
+                meta["wing"] = wing
+            if room:
+                meta["room"] = room
+            compressed = dialect.compress(text, metadata=meta if meta else None)
+            stats = dialect.compression_stats(text, compressed)
+            return CompressTextResult(
+                ok=True,
+                aaaK_text=compressed,
+                orig_tokens_est=stats["original_tokens_est"],
+                comp_tokens_est=stats["summary_tokens_est"],
+                compression_ratio=stats["size_ratio"],
+                source_label=source_label,
+            )
+        except Exception as e:
+            return CompressTextResult(ok=False, error=str(e))
+
+    # ------------------------------------------------------------------
+    # run_read_source_file — read a file from disk
+    # ------------------------------------------------------------------
+
+    def run_read_source_file(self, source_path: str) -> SourceFileResult:
+        """Read a source file from disk given its full path.
+
+        The source_path comes from ChromaDB metadata (set at mine time).
+        The file may have been moved or deleted since mining.
+
+        Args:
+            source_path: Absolute path to the source file.
+
+        Returns:
+            SourceFileResult with file content, or ok=False with error.
+        """
+        if not source_path:
+            return SourceFileResult(ok=False, error="No source path available")
+        try:
+            p = Path(source_path)
+            if not p.exists():
+                return SourceFileResult(
+                    ok=False,
+                    path=source_path,
+                    error=f"File not found: {source_path}",
+                )
+            text = p.read_text(encoding="utf-8", errors="replace")
+            return SourceFileResult(ok=True, text=text, path=str(p.resolve()))
+        except Exception as e:
+            return SourceFileResult(ok=False, path=source_path, error=str(e))
 
     # ------------------------------------------------------------------
     # run_status — captures stdout, returns structured PalaceStatus

@@ -66,6 +66,8 @@ from mempalace.gui_adapter import (
     SearchResult,
     WakeUpResult,
     CompressResult,
+    CompressTextResult,
+    SourceFileResult,
     ContextPackResult,
 )
 
@@ -239,6 +241,48 @@ class _CompressWorker(_Worker):
         self.finished.emit(result)
 
 
+class _CompressTextWorker(_Worker):
+    finished = Signal(object)
+
+    def __init__(
+        self,
+        adapter: MemPalaceAdapter,
+        text: str,
+        source_label: str,
+        wing: str,
+        room: str,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._adapter = adapter
+        self._text = text
+        self._source_label = source_label
+        self._wing = wing
+        self._room = room
+
+    def run(self):
+        result = self._adapter.run_compress_text(
+            self._text,
+            source_label=self._source_label,
+            wing=self._wing,
+            room=self._room,
+        )
+        self.finished.emit(result)
+
+
+class _ReadSourceFileWorker(_Worker):
+    finished = Signal(object)
+
+    def __init__(self, adapter: MemPalaceAdapter, source_path: str, parent=None):
+        super().__init__(parent)
+        self._adapter = adapter
+        self._source_path = source_path
+
+    def run(self):
+        result = self._adapter.run_read_source_file(self._source_path)
+        self.finished.emit(result)
+
+
 # ---------------------------------------------------------------------------
 # QtController
 # ---------------------------------------------------------------------------
@@ -274,6 +318,8 @@ class QtController(QObject):
     context_pack_finished = Signal(object)  # ContextPackResult
     wakeup_finished = Signal(object)  # WakeUpResult
     compress_finished = Signal(object)  # CompressResult
+    compress_text_finished = Signal(object)  # CompressTextResult
+    source_file_finished = Signal(object)  # SourceFileResult
     busy_changed = Signal(bool)
     error = Signal(str)
     palace_switched = Signal(str)  # new palace path
@@ -291,6 +337,8 @@ class QtController(QObject):
         self._cp_worker: Optional[_ContextPackWorker] = None
         self._wakeup_worker: Optional[_WakeUpWorker] = None
         self._compress_worker: Optional[_CompressWorker] = None
+        self._compress_text_worker: Optional[_CompressTextWorker] = None
+        self._read_source_worker: Optional[_ReadSourceFileWorker] = None
 
     @property
     def palace_path(self) -> str:
@@ -440,6 +488,40 @@ class QtController(QObject):
         self._compress_worker = w
         w.start()
 
+    def request_compress_text(
+        self,
+        text: str,
+        source_label: str = "",
+        wing: str = "",
+        room: str = "",
+    ) -> None:
+        """Compress a single text fragment to AAAK (non-blocking). Ignores if busy."""
+        if not text.strip():
+            return
+        if self._busy:
+            self.error.emit("Another operation is in progress. Please wait.")
+            return
+        self._set_busy(True)
+        w = _CompressTextWorker(self._adapter, text, source_label, wing, room, parent=self)
+        w.finished.connect(self._on_compress_text_done)
+        w.finished.connect(w.deleteLater)
+        self._compress_text_worker = w
+        w.start()
+
+    def request_read_source_file(self, source_path: str) -> None:
+        """Read a source file from disk (non-blocking). Ignores if busy."""
+        if not source_path:
+            return
+        if self._busy:
+            self.error.emit("Another operation is in progress. Please wait.")
+            return
+        self._set_busy(True)
+        w = _ReadSourceFileWorker(self._adapter, source_path, parent=self)
+        w.finished.connect(self._on_source_file_done)
+        w.finished.connect(w.deleteLater)
+        self._read_source_worker = w
+        w.start()
+
     # ------------------------------------------------------------------
     # Internal slots (called from worker threads via Qt queued connection)
     # ------------------------------------------------------------------
@@ -502,6 +584,20 @@ class QtController(QObject):
         if not result.ok:
             self.error.emit(f"Compress failed: {result.error}")
         self.compress_finished.emit(result)
+
+    @Slot(object)
+    def _on_compress_text_done(self, result: CompressTextResult) -> None:
+        self._set_busy(False)
+        if not result.ok:
+            self.error.emit(f"Compress text failed: {result.error}")
+        self.compress_text_finished.emit(result)
+
+    @Slot(object)
+    def _on_source_file_done(self, result: SourceFileResult) -> None:
+        self._set_busy(False)
+        if not result.ok:
+            self.error.emit(f"Read source failed: {result.error}")
+        self.source_file_finished.emit(result)
 
     # ------------------------------------------------------------------
     # Helpers

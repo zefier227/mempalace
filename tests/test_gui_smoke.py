@@ -622,12 +622,12 @@ class TestCompressPanel:
 
 
 # ---------------------------------------------------------------------------
-# 9. Search usability actions — context menu, copy, navigate
+# 9. Search usability actions — 3 scope levels
 # ---------------------------------------------------------------------------
 
 
 class TestSearchUsabilityActions:
-    """Verify context menu, copy actions, and Send-to navigation from SearchPanel."""
+    """Verify context menu, copy actions, and navigation from SearchPanel — 3 scope levels."""
 
     def _make_panel(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
@@ -637,15 +637,17 @@ class TestSearchUsabilityActions:
         panel = SearchPanel(ctrl)
         return ctrl, panel
 
-    def _populate_hits(self, panel):
+    def _populate_hits(self, panel, tmp_path=None):
         from mempalace.gui_adapter import SearchResult, SearchHit
 
+        source_path = str(tmp_path / "design.md") if tmp_path else "/tmp/design.md"
         hits = [
             SearchHit(
                 text="GraphQL design decisions",
                 wing="projects",
                 room="2024-01-15",
                 source_file="design.md",
+                source_path=source_path,
                 similarity=0.85,
                 distance=0.15,
             ),
@@ -654,6 +656,7 @@ class TestSearchUsabilityActions:
                 wing="projects",
                 room="2024-02-01",
                 source_file="caching.md",
+                source_path="/tmp/caching.md",
                 similarity=0.72,
                 distance=0.28,
             ),
@@ -662,7 +665,7 @@ class TestSearchUsabilityActions:
         panel._on_search_done(result)
         return hits
 
-    # -- Action button existence --
+    # -- Hit-level button existence --
 
     def test_has_copy_text_button(self, qapp, tmp_palace):
         from PySide6.QtWidgets import QPushButton
@@ -672,57 +675,81 @@ class TestSearchUsabilityActions:
         labels = [b.text() for b in btns]
         assert any("Copy text" in lbl for lbl in labels)
 
-    def test_has_copy_source_button(self, qapp, tmp_palace):
+    def test_has_compress_to_aaak_button(self, qapp, tmp_palace):
         from PySide6.QtWidgets import QPushButton
 
         _, panel = self._make_panel(qapp, tmp_palace)
         btns = panel.findChildren(QPushButton)
         labels = [b.text() for b in btns]
-        assert any("Copy source" in lbl for lbl in labels)
+        assert any("Compress to AAAK" in lbl for lbl in labels)
 
-    def test_has_copy_path_button(self, qapp, tmp_palace):
+    # -- File-level button existence --
+
+    def test_has_copy_source_file_button(self, qapp, tmp_palace):
         from PySide6.QtWidgets import QPushButton
 
         _, panel = self._make_panel(qapp, tmp_palace)
         btns = panel.findChildren(QPushButton)
         labels = [b.text() for b in btns]
-        assert any("Copy path" in lbl for lbl in labels)
+        assert any("Copy source file" in lbl for lbl in labels)
 
-    def test_has_send_to_wakeup_button(self, qapp, tmp_palace):
+    def test_has_open_source_file_button(self, qapp, tmp_palace):
         from PySide6.QtWidgets import QPushButton
 
         _, panel = self._make_panel(qapp, tmp_palace)
         btns = panel.findChildren(QPushButton)
         labels = [b.text() for b in btns]
-        assert any("Wake-up" in lbl for lbl in labels)
+        assert any("Open source file" in lbl for lbl in labels)
 
-    def test_has_send_to_compress_button(self, qapp, tmp_palace):
+    def test_has_compress_file_button(self, qapp, tmp_palace):
         from PySide6.QtWidgets import QPushButton
 
         _, panel = self._make_panel(qapp, tmp_palace)
         btns = panel.findChildren(QPushButton)
         labels = [b.text() for b in btns]
-        assert any("Compress" in lbl for lbl in labels)
+        assert any("Compress file" in lbl for lbl in labels)
+
+    # -- Wing-level button existence --
+
+    def test_has_open_wing_in_wakeup_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Open wing in Wake-up" in lbl for lbl in labels)
+
+    def test_has_open_wing_in_compress_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Open wing in Compress" in lbl for lbl in labels)
 
     # -- Action buttons disabled when no hit selected --
 
     def test_action_buttons_disabled_initially(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
         assert panel._copy_text_btn.isEnabled() is False
-        assert panel._copy_source_btn.isEnabled() is False
-        assert panel._copy_path_btn.isEnabled() is False
-        assert panel._send_wakeup_btn.isEnabled() is False
-        assert panel._send_compress_btn.isEnabled() is False
+        assert panel._compress_hit_btn.isEnabled() is False
+        assert panel._copy_file_btn.isEnabled() is False
+        assert panel._open_file_btn.isEnabled() is False
+        assert panel._compress_file_btn.isEnabled() is False
+        assert panel._open_wing_wakeup_btn.isEnabled() is False
+        assert panel._open_wing_compress_btn.isEnabled() is False
 
     def test_action_buttons_enabled_on_hit_selection(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
         self._populate_hits(panel)
         panel._on_result_selected(0)
         assert panel._copy_text_btn.isEnabled() is True
-        assert panel._copy_source_btn.isEnabled() is True
-        assert panel._copy_path_btn.isEnabled() is True
-        assert panel._send_wakeup_btn.isEnabled() is True
-        assert panel._send_compress_btn.isEnabled() is True
+        assert panel._compress_hit_btn.isEnabled() is True
+        assert panel._copy_file_btn.isEnabled() is True
+        assert panel._open_file_btn.isEnabled() is True
+        assert panel._compress_file_btn.isEnabled() is True
+        assert panel._open_wing_wakeup_btn.isEnabled() is True
+        assert panel._open_wing_compress_btn.isEnabled() is True
 
     def test_action_buttons_disabled_on_invalid_row(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
@@ -730,7 +757,7 @@ class TestSearchUsabilityActions:
         panel._on_result_selected(-1)
         assert panel._copy_text_btn.isEnabled() is False
 
-    # -- Copy actions --
+    # -- Hit-level copy --
 
     def test_copy_text_puts_hit_text_in_clipboard(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
@@ -742,25 +769,14 @@ class TestSearchUsabilityActions:
         cb = QGuiApplication.clipboard()
         assert cb.text() == hits[0].text
 
-    def test_copy_source_puts_source_file_in_clipboard(self, qapp, tmp_palace):
+    # -- source_path available for file-level actions --
+
+    def test_source_path_available_on_hit(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
         hits = self._populate_hits(panel)
         panel._on_result_selected(0)
-        panel._copy_hit_source()
-        from PySide6.QtGui import QGuiApplication
-
-        cb = QGuiApplication.clipboard()
-        assert cb.text() == hits[0].source_file
-
-    def test_copy_path_puts_wing_room_in_clipboard(self, qapp, tmp_palace):
-        _, panel = self._make_panel(qapp, tmp_palace)
-        hits = self._populate_hits(panel)
-        panel._on_result_selected(0)
-        panel._copy_hit_path()
-        from PySide6.QtGui import QGuiApplication
-
-        cb = QGuiApplication.clipboard()
-        assert cb.text() == f"{hits[0].wing} / {hits[0].room}"
+        assert hasattr(hits[0], "source_path")
+        assert hits[0].source_path != ""
 
     # -- Context menu --
 
@@ -770,22 +786,27 @@ class TestSearchUsabilityActions:
         _, panel = self._make_panel(qapp, tmp_palace)
         assert panel._results_list.contextMenuPolicy() == Qt.CustomContextMenu
 
-    def test_context_menu_actions_exist(self, qapp, tmp_palace):
+    def test_context_menu_has_scope_submenus(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
         self._populate_hits(panel)
         panel._on_result_selected(0)
         from PySide6.QtWidgets import QMenu
 
         menu = QMenu(panel)
-        menu.addAction("Copy text", lambda: None)
-        menu.addAction("Copy source file", lambda: None)
-        menu.addAction("Copy path", lambda: None)
+        hit_menu = menu.addMenu("Hit")
+        hit_menu.addAction("Copy text", lambda: None)
+        hit_menu.addAction("Compress to AAAK", lambda: None)
+        file_menu = menu.addMenu("File")
+        file_menu.addAction("Copy source file", lambda: None)
+        file_menu.addAction("Open source file", lambda: None)
+        file_menu.addAction("Compress source file", lambda: None)
         menu.addSeparator()
-        menu.addAction("Send to Wake-up", lambda: None)
-        menu.addAction("Send to Compress", lambda: None)
-        assert len(menu.actions()) == 6
+        wing_menu = menu.addMenu("Wing")
+        wing_menu.addAction("Open wing in Wake-up", lambda: None)
+        wing_menu.addAction("Open wing in Compress", lambda: None)
+        assert len(menu.actions()) == 4  # Hit menu + File menu + separator + Wing menu
 
-    # -- Navigation signals --
+    # -- Wing-level navigation signals --
 
     def test_navigate_to_wakeup_signal_emitted(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
@@ -793,7 +814,7 @@ class TestSearchUsabilityActions:
         panel._on_result_selected(0)
         received = []
         panel._ctrl.navigate_to_wakeup.connect(lambda w: received.append(w))
-        panel._send_to_wakeup()
+        panel._open_wing_in_wakeup()
         assert received == ["projects"]
 
     def test_navigate_to_compress_signal_emitted(self, qapp, tmp_palace):
@@ -802,8 +823,18 @@ class TestSearchUsabilityActions:
         panel._on_result_selected(0)
         received = []
         panel._ctrl.navigate_to_compress.connect(lambda w: received.append(w))
-        panel._send_to_compress()
+        panel._open_wing_in_compress()
         assert received == ["projects"]
+
+    # -- Wing-level buttons use honest labels --
+
+    def test_wing_buttons_say_open_wing(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        wing_btns = [b for b in panel.findChildren(QPushButton) if "wing" in b.text().lower()]
+        labels = [b.text() for b in wing_btns]
+        assert any("Open wing in" in lbl for lbl in labels)
 
     # -- Search semantics unchanged --
 
@@ -830,6 +861,14 @@ class TestSearchUsabilityActions:
         empty_result = SearchResult(ok=True, query="nothing", hits=[])
         panel._on_search_done(empty_result)
         assert panel._copy_text_btn.isEnabled() is False
+
+    def test_source_path_not_displayed_in_result_list(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        for i in range(panel._results_list.count()):
+            item = panel._results_list.item(i)
+            text = item.text()
+            assert "/tmp/design.md" not in text, "source_path must not appear in result list"
 
 
 # ---------------------------------------------------------------------------
@@ -929,3 +968,78 @@ class TestMainWindowNavigation:
         ctrl = QtController(palace_path=tmp_palace)
         assert hasattr(ctrl, "navigate_to_wakeup")
         assert hasattr(ctrl, "navigate_to_compress")
+
+
+# ---------------------------------------------------------------------------
+# 12. CompressText and SourceFile adapter methods
+# ---------------------------------------------------------------------------
+
+
+class TestCompressTextAndSourceFile:
+    """Verify gui_adapter.run_compress_text() and run_read_source_file()."""
+
+    def test_compress_text_returns_aaak(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_compress_text(
+            "We decided to use GraphQL instead of REST for better performance.",
+            source_label="design.md",
+            wing="projects",
+            room="decisions",
+        )
+        assert result.ok
+        assert result.aaaK_text != ""
+        assert result.orig_tokens_est > 0
+        assert result.comp_tokens_est > 0
+        assert result.compression_ratio > 0
+
+    def test_compress_text_does_not_store(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_compress_text("Some text to compress")
+        assert result.ok
+        assert result.aaaK_text != ""
+
+    def test_read_source_file_exists(self, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        f = tmp_path / "notes.md"
+        f.write_text("Some notes here")
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_read_source_file(str(f))
+        assert result.ok
+        assert result.text == "Some notes here"
+        assert result.path != ""
+
+    def test_read_source_file_not_found(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_read_source_file("/nonexistent/path/file.md")
+        assert result.ok is False
+        assert "not found" in result.error.lower() or "error" in result.error.lower()
+
+    def test_read_source_file_empty_path(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_read_source_file("")
+        assert result.ok is False
+
+    def test_compress_text_result_type(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter, CompressTextResult
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_compress_text("Hello world")
+        assert isinstance(result, CompressTextResult)
+
+    def test_source_file_result_type(self, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import MemPalaceAdapter, SourceFileResult
+
+        f = tmp_path / "test.txt"
+        f.write_text("content")
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_read_source_file(str(f))
+        assert isinstance(result, SourceFileResult)

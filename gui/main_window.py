@@ -58,6 +58,8 @@ from mempalace.gui_adapter import (
     SearchHit,
     WakeUpResult,
     CompressResult,
+    CompressTextResult,
+    SourceFileResult,
     ContextPackResult,
 )
 
@@ -534,41 +536,73 @@ class SearchPanel(QWidget):
         self._meta_lbl.setStyleSheet("color: #666; font-size: 11px;")
         right_layout.addWidget(self._meta_lbl)
 
-        # Action buttons row
-        action_row = QHBoxLayout()
+        # --- Hit-level actions ---
+        hit_row = QHBoxLayout()
         self._copy_text_btn = QPushButton("Copy text")
         self._copy_text_btn.setFixedHeight(28)
         self._copy_text_btn.setEnabled(False)
+        self._copy_text_btn.setToolTip("Copy the selected hit's verbatim text to clipboard")
         self._copy_text_btn.clicked.connect(self._copy_hit_text)
-        action_row.addWidget(self._copy_text_btn)
+        hit_row.addWidget(self._copy_text_btn)
 
-        self._copy_source_btn = QPushButton("Copy source")
-        self._copy_source_btn.setFixedHeight(28)
-        self._copy_source_btn.setEnabled(False)
-        self._copy_source_btn.clicked.connect(self._copy_hit_source)
-        action_row.addWidget(self._copy_source_btn)
+        self._compress_hit_btn = QPushButton("Compress to AAAK")
+        self._compress_hit_btn.setFixedHeight(28)
+        self._compress_hit_btn.setEnabled(False)
+        self._compress_hit_btn.setToolTip("AAAK-compress the selected hit's text (does not store)")
+        self._compress_hit_btn.clicked.connect(self._compress_hit_text)
+        hit_row.addWidget(self._compress_hit_btn)
 
-        self._copy_path_btn = QPushButton("Copy path")
-        self._copy_path_btn.setFixedHeight(28)
-        self._copy_path_btn.setEnabled(False)
-        self._copy_path_btn.clicked.connect(self._copy_hit_path)
-        action_row.addWidget(self._copy_path_btn)
+        hit_row.addStretch()
+        right_layout.addLayout(hit_row)
 
-        action_row.addStretch()
+        # --- File-level actions ---
+        file_row = QHBoxLayout()
+        self._copy_file_btn = QPushButton("Copy source file")
+        self._copy_file_btn.setFixedHeight(28)
+        self._copy_file_btn.setEnabled(False)
+        self._copy_file_btn.setToolTip("Copy the full source file content to clipboard")
+        self._copy_file_btn.clicked.connect(self._copy_source_file)
+        file_row.addWidget(self._copy_file_btn)
 
-        self._send_wakeup_btn = QPushButton("Send to Wake-up")
-        self._send_wakeup_btn.setFixedHeight(28)
-        self._send_wakeup_btn.setEnabled(False)
-        self._send_wakeup_btn.clicked.connect(self._send_to_wakeup)
-        action_row.addWidget(self._send_wakeup_btn)
+        self._open_file_btn = QPushButton("Open source file")
+        self._open_file_btn.setFixedHeight(28)
+        self._open_file_btn.setEnabled(False)
+        self._open_file_btn.setToolTip("Load the full source file into the preview pane")
+        self._open_file_btn.clicked.connect(self._open_source_file)
+        file_row.addWidget(self._open_file_btn)
 
-        self._send_compress_btn = QPushButton("Send to Compress")
-        self._send_compress_btn.setFixedHeight(28)
-        self._send_compress_btn.setEnabled(False)
-        self._send_compress_btn.clicked.connect(self._send_to_compress)
-        action_row.addWidget(self._send_compress_btn)
+        self._compress_file_btn = QPushButton("Compress file")
+        self._compress_file_btn.setFixedHeight(28)
+        self._compress_file_btn.setEnabled(False)
+        self._compress_file_btn.setToolTip("AAAK-compress the full source file (does not store)")
+        self._compress_file_btn.clicked.connect(self._compress_source_file)
+        file_row.addWidget(self._compress_file_btn)
 
-        right_layout.addLayout(action_row)
+        file_row.addStretch()
+        right_layout.addLayout(file_row)
+
+        # --- Wing-level actions ---
+        wing_row = QHBoxLayout()
+        self._open_wing_wakeup_btn = QPushButton("Open wing in Wake-up")
+        self._open_wing_wakeup_btn.setFixedHeight(28)
+        self._open_wing_wakeup_btn.setEnabled(False)
+        self._open_wing_wakeup_btn.setToolTip(
+            "Switch to Wake-up tab with this hit's wing prefilled"
+        )
+        self._open_wing_wakeup_btn.clicked.connect(self._open_wing_in_wakeup)
+        wing_row.addWidget(self._open_wing_wakeup_btn)
+
+        self._open_wing_compress_btn = QPushButton("Open wing in Compress")
+        self._open_wing_compress_btn.setFixedHeight(28)
+        self._open_wing_compress_btn.setEnabled(False)
+        self._open_wing_compress_btn.setToolTip(
+            "Switch to Compress tab with this hit's wing prefilled"
+        )
+        self._open_wing_compress_btn.clicked.connect(self._open_wing_in_compress)
+        wing_row.addWidget(self._open_wing_compress_btn)
+
+        wing_row.addStretch()
+        right_layout.addLayout(wing_row)
 
         splitter.addWidget(right)
         splitter.setSizes([300, 500])
@@ -586,6 +620,8 @@ class SearchPanel(QWidget):
 
         # Wire signals
         self._ctrl.search_finished.connect(self._on_search_done)
+        self._ctrl.compress_text_finished.connect(self._on_compress_text_done)
+        self._ctrl.source_file_finished.connect(self._on_source_file_done)
         self._ctrl.busy_changed.connect(self._on_busy)
         self._ctrl.palace_switched.connect(self._on_palace_switched)
 
@@ -597,49 +633,128 @@ class SearchPanel(QWidget):
         return None
 
     def _set_action_buttons_enabled(self, enabled: bool):
-        self._copy_text_btn.setEnabled(enabled)
-        self._copy_source_btn.setEnabled(enabled)
-        self._copy_path_btn.setEnabled(enabled)
-        self._send_wakeup_btn.setEnabled(enabled)
-        self._send_compress_btn.setEnabled(enabled)
+        for btn in (
+            self._copy_text_btn,
+            self._compress_hit_btn,
+            self._copy_file_btn,
+            self._open_file_btn,
+            self._compress_file_btn,
+            self._open_wing_wakeup_btn,
+            self._open_wing_compress_btn,
+        ):
+            btn.setEnabled(enabled)
 
     def _on_context_menu(self, pos):
         hit = self._current_hit
         if hit is None:
             return
         menu = QMenu(self)
-        menu.addAction("Copy text", self._copy_hit_text)
-        menu.addAction("Copy source file", self._copy_hit_source)
-        menu.addAction(f"Copy path  ({hit.wing} / {hit.room})", self._copy_hit_path)
+
+        # Hit-level
+        hit_menu = menu.addMenu("Hit")
+        hit_menu.addAction("Copy text", self._copy_hit_text)
+        hit_menu.addAction("Compress to AAAK", self._compress_hit_text)
+
+        # File-level
+        file_menu = menu.addMenu("File")
+        file_menu.addAction("Copy source file", self._copy_source_file)
+        file_menu.addAction("Open source file", self._open_source_file)
+        file_menu.addAction("Compress source file", self._compress_source_file)
+
         menu.addSeparator()
-        menu.addAction("Send to Wake-up", self._send_to_wakeup)
-        menu.addAction("Send to Compress", self._send_to_compress)
+
+        # Wing-level
+        wing_menu = menu.addMenu("Wing")
+        wing_menu.addAction("Open wing in Wake-up", self._open_wing_in_wakeup)
+        wing_menu.addAction("Open wing in Compress", self._open_wing_in_compress)
+
         menu.exec_(self._results_list.viewport().mapToGlobal(pos))
+
+    # --- Hit-level actions ---
 
     def _copy_hit_text(self):
         hit = self._current_hit
         if hit:
             QGuiApplication.clipboard().setText(hit.text)
 
-    def _copy_hit_source(self):
+    def _compress_hit_text(self):
         hit = self._current_hit
         if hit:
-            QGuiApplication.clipboard().setText(hit.source_file)
+            self._ctrl.request_compress_text(
+                hit.text,
+                source_label=hit.source_file,
+                wing=hit.wing,
+                room=hit.room,
+            )
 
-    def _copy_hit_path(self):
+    # --- File-level actions ---
+
+    def _copy_source_file(self):
         hit = self._current_hit
-        if hit:
-            QGuiApplication.clipboard().setText(f"{hit.wing} / {hit.room}")
+        if hit and hit.source_path:
+            result = self._ctrl._adapter.run_read_source_file(hit.source_path)
+            if result.ok:
+                QGuiApplication.clipboard().setText(result.text)
+            else:
+                self._ctrl.error.emit(result.error)
 
-    def _send_to_wakeup(self):
+    def _open_source_file(self):
+        hit = self._current_hit
+        if hit and hit.source_path:
+            self._ctrl.request_read_source_file(hit.source_path)
+
+    def _compress_source_file(self):
+        hit = self._current_hit
+        if hit and hit.source_path:
+            result = self._ctrl._adapter.run_read_source_file(hit.source_path)
+            if result.ok:
+                self._ctrl.request_compress_text(
+                    result.text,
+                    source_label=hit.source_file,
+                    wing=hit.wing,
+                    room=hit.room,
+                )
+            else:
+                self._ctrl.error.emit(result.error)
+
+    # --- Wing-level actions ---
+
+    def _open_wing_in_wakeup(self):
         hit = self._current_hit
         if hit:
             self._ctrl.navigate_to_wakeup.emit(hit.wing)
 
-    def _send_to_compress(self):
+    def _open_wing_in_compress(self):
         hit = self._current_hit
         if hit:
             self._ctrl.navigate_to_compress.emit(hit.wing)
+
+    # --- Compress-text / source-file result handlers ---
+
+    @Slot(object)
+    def _on_compress_text_done(self, result):
+        if not isinstance(result, CompressTextResult):
+            return
+        if not result.ok:
+            self._preview.setPlainText(f"Compress error: {result.error}")
+            return
+        lines = [
+            f"AAAK Compressed: {result.source_label}",
+            f"  {result.orig_tokens_est}t -> {result.comp_tokens_est}t ({result.compression_ratio:.1f}x)",
+            "=" * 50,
+            result.aaaK_text,
+        ]
+        self._preview.setPlainText("\n".join(lines))
+
+    @Slot(object)
+    def _on_source_file_done(self, result):
+        if not isinstance(result, SourceFileResult):
+            return
+        if not result.ok:
+            self._preview.setPlainText(f"File error: {result.error}")
+            return
+        self._preview_header.setText(f"[File] {result.path}")
+        self._preview.setPlainText(result.text)
 
     def _on_palace_switched(self, new_path: str):
         self._results_list.clear()

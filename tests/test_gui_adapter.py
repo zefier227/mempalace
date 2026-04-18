@@ -362,7 +362,7 @@ class TestRunSearch:
         assert isinstance(hit.distance, float)
 
     def test_search_result_has_no_extra_fields(self, adapter_mined):
-        """SearchHit must NOT have fields from the search_memories pipeline."""
+        """SearchHit must NOT have fields from the search_memories pipeline (except source_path for actions)."""
         result = adapter_mined.run_search("PostgreSQL database")
         assert result.ok
         assert len(result.hits) >= 1
@@ -373,11 +373,11 @@ class TestRunSearch:
             "bm25_score",
             "matched_via",
             "closet_preview",
-            "source_path",
             "chunk_index",
             "drawer_id",
         ):
             assert not hasattr(hit, field), f"SearchHit must not have field '{field}'"
+        assert hasattr(hit, "source_path"), "SearchHit must have source_path for file-level actions"
 
     def test_search_no_results_with_tiny_collection(self, tmp_palace):
         """On an empty/unmined palace, search returns ok=True with 0 hits."""
