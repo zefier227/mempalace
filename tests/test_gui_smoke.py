@@ -619,3 +619,313 @@ class TestCompressPanel:
         result = CompressResult(ok=False, error="No palace")
         panel._on_compress_done(result)
         assert "Error:" in panel._output.toPlainText()
+
+
+# ---------------------------------------------------------------------------
+# 9. Search usability actions — context menu, copy, navigate
+# ---------------------------------------------------------------------------
+
+
+class TestSearchUsabilityActions:
+    """Verify context menu, copy actions, and Send-to navigation from SearchPanel."""
+
+    def _make_panel(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import SearchPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        return ctrl, panel
+
+    def _populate_hits(self, panel):
+        from mempalace.gui_adapter import SearchResult, SearchHit
+
+        hits = [
+            SearchHit(
+                text="GraphQL design decisions",
+                wing="projects",
+                room="2024-01-15",
+                source_file="design.md",
+                similarity=0.85,
+                distance=0.15,
+            ),
+            SearchHit(
+                text="Redis caching strategy",
+                wing="projects",
+                room="2024-02-01",
+                source_file="caching.md",
+                similarity=0.72,
+                distance=0.28,
+            ),
+        ]
+        result = SearchResult(ok=True, query="architecture", hits=hits)
+        panel._on_search_done(result)
+        return hits
+
+    # -- Action button existence --
+
+    def test_has_copy_text_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Copy text" in lbl for lbl in labels)
+
+    def test_has_copy_source_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Copy source" in lbl for lbl in labels)
+
+    def test_has_copy_path_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Copy path" in lbl for lbl in labels)
+
+    def test_has_send_to_wakeup_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Wake-up" in lbl for lbl in labels)
+
+    def test_has_send_to_compress_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Compress" in lbl for lbl in labels)
+
+    # -- Action buttons disabled when no hit selected --
+
+    def test_action_buttons_disabled_initially(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        assert panel._copy_text_btn.isEnabled() is False
+        assert panel._copy_source_btn.isEnabled() is False
+        assert panel._copy_path_btn.isEnabled() is False
+        assert panel._send_wakeup_btn.isEnabled() is False
+        assert panel._send_compress_btn.isEnabled() is False
+
+    def test_action_buttons_enabled_on_hit_selection(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        panel._on_result_selected(0)
+        assert panel._copy_text_btn.isEnabled() is True
+        assert panel._copy_source_btn.isEnabled() is True
+        assert panel._copy_path_btn.isEnabled() is True
+        assert panel._send_wakeup_btn.isEnabled() is True
+        assert panel._send_compress_btn.isEnabled() is True
+
+    def test_action_buttons_disabled_on_invalid_row(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        panel._on_result_selected(-1)
+        assert panel._copy_text_btn.isEnabled() is False
+
+    # -- Copy actions --
+
+    def test_copy_text_puts_hit_text_in_clipboard(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        hits = self._populate_hits(panel)
+        panel._on_result_selected(0)
+        panel._copy_hit_text()
+        from PySide6.QtGui import QGuiApplication
+
+        cb = QGuiApplication.clipboard()
+        assert cb.text() == hits[0].text
+
+    def test_copy_source_puts_source_file_in_clipboard(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        hits = self._populate_hits(panel)
+        panel._on_result_selected(0)
+        panel._copy_hit_source()
+        from PySide6.QtGui import QGuiApplication
+
+        cb = QGuiApplication.clipboard()
+        assert cb.text() == hits[0].source_file
+
+    def test_copy_path_puts_wing_room_in_clipboard(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        hits = self._populate_hits(panel)
+        panel._on_result_selected(0)
+        panel._copy_hit_path()
+        from PySide6.QtGui import QGuiApplication
+
+        cb = QGuiApplication.clipboard()
+        assert cb.text() == f"{hits[0].wing} / {hits[0].room}"
+
+    # -- Context menu --
+
+    def test_results_list_has_context_menu_policy(self, qapp, tmp_palace):
+        from PySide6.QtCore import Qt
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        assert panel._results_list.contextMenuPolicy() == Qt.CustomContextMenu
+
+    def test_context_menu_actions_exist(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        panel._on_result_selected(0)
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(panel)
+        menu.addAction("Copy text", lambda: None)
+        menu.addAction("Copy source file", lambda: None)
+        menu.addAction("Copy path", lambda: None)
+        menu.addSeparator()
+        menu.addAction("Send to Wake-up", lambda: None)
+        menu.addAction("Send to Compress", lambda: None)
+        assert len(menu.actions()) == 6
+
+    # -- Navigation signals --
+
+    def test_navigate_to_wakeup_signal_emitted(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        panel._on_result_selected(0)
+        received = []
+        panel._ctrl.navigate_to_wakeup.connect(lambda w: received.append(w))
+        panel._send_to_wakeup()
+        assert received == ["projects"]
+
+    def test_navigate_to_compress_signal_emitted(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        panel._on_result_selected(0)
+        received = []
+        panel._ctrl.navigate_to_compress.connect(lambda w: received.append(w))
+        panel._send_to_compress()
+        assert received == ["projects"]
+
+    # -- Search semantics unchanged --
+
+    def test_search_still_returns_flat_hits(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        assert panel._results_list.count() == 2
+        assert len(panel._hits) == 2
+
+    def test_search_no_grouping(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        for i in range(panel._results_list.count()):
+            item = panel._results_list.item(i)
+            assert item is not None
+
+    def test_action_buttons_disabled_after_new_empty_search(self, qapp, tmp_palace):
+        from mempalace.gui_adapter import SearchResult
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        panel._on_result_selected(0)
+        assert panel._copy_text_btn.isEnabled() is True
+        empty_result = SearchResult(ok=True, query="nothing", hits=[])
+        panel._on_search_done(empty_result)
+        assert panel._copy_text_btn.isEnabled() is False
+
+
+# ---------------------------------------------------------------------------
+# 10. Panel prefill — WakeUpPanel and CompressPanel
+# ---------------------------------------------------------------------------
+
+
+class TestPanelPrefill:
+    """WakeUpPanel and CompressPanel must accept prefill from navigation."""
+
+    def test_wakeup_prefill_sets_wing(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import WakeUpPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = WakeUpPanel(ctrl)
+        panel.prefill(wing="my-project")
+        assert panel._wing_edit.text() == "my-project"
+
+    def test_wakeup_prefill_empty_wing_does_not_overwrite(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import WakeUpPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = WakeUpPanel(ctrl)
+        panel._wing_edit.setText("existing")
+        panel.prefill(wing="")
+        assert panel._wing_edit.text() == "existing"
+
+    def test_compress_prefill_sets_wing(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import CompressPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = CompressPanel(ctrl)
+        panel.prefill(wing="my-project")
+        assert panel._wing_edit.text() == "my-project"
+
+    def test_compress_prefill_empty_wing_does_not_overwrite(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import CompressPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = CompressPanel(ctrl)
+        panel._wing_edit.setText("existing")
+        panel.prefill(wing="")
+        assert panel._wing_edit.text() == "existing"
+
+
+# ---------------------------------------------------------------------------
+# 11. MainWindow navigation — tab switch + prefill
+# ---------------------------------------------------------------------------
+
+
+class TestMainWindowNavigation:
+    """MainWindow must switch tabs and prefill when navigate signals fire."""
+
+    def _make_window(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import MainWindow
+
+        ctrl = QtController(palace_path=tmp_palace)
+        win = MainWindow(controller=ctrl)
+        return ctrl, win
+
+    def test_navigate_to_wakeup_switches_tab(self, qapp, tmp_palace):
+        ctrl, win = self._make_window(qapp, tmp_palace)
+        ctrl.navigate_to_wakeup.emit("projects")
+        from PySide6.QtWidgets import QTabWidget
+
+        tabs = win.findChild(QTabWidget)
+        current_text = tabs.tabText(tabs.indexOf(win._wakeup_panel))
+        assert "Wake-up" in current_text
+        assert tabs.currentWidget() is win._wakeup_panel
+
+    def test_navigate_to_wakeup_prefills_wing(self, qapp, tmp_palace):
+        ctrl, win = self._make_window(qapp, tmp_palace)
+        ctrl.navigate_to_wakeup.emit("projects")
+        assert win._wakeup_panel._wing_edit.text() == "projects"
+
+    def test_navigate_to_compress_switches_tab(self, qapp, tmp_palace):
+        ctrl, win = self._make_window(qapp, tmp_palace)
+        ctrl.navigate_to_compress.emit("projects")
+        from PySide6.QtWidgets import QTabWidget
+
+        tabs = win.findChild(QTabWidget)
+        assert tabs.currentWidget() is win._compress_panel
+
+    def test_navigate_to_compress_prefills_wing(self, qapp, tmp_palace):
+        ctrl, win = self._make_window(qapp, tmp_palace)
+        ctrl.navigate_to_compress.emit("projects")
+        assert win._compress_panel._wing_edit.text() == "projects"
+
+    def test_navigate_signals_exist_on_controller(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+
+        ctrl = QtController(palace_path=tmp_palace)
+        assert hasattr(ctrl, "navigate_to_wakeup")
+        assert hasattr(ctrl, "navigate_to_compress")

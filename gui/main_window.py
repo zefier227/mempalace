@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from PySide6.QtCore import Qt, Slot, QSize, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -429,6 +430,11 @@ class SearchPanel(QWidget):
 
     Mirrors CLI ``mempalace search`` behaviour exactly:
     flat hit list, raw similarity, verbatim drawer text in preview.
+
+    Usability actions on each hit:
+    - Copy text / Copy source / Copy wing-room path (clipboard)
+    - Send to Wake-up (prefill wing, switch tab)
+    - Send to Compress (prefill wing, switch tab)
     """
 
     def __init__(self, controller: QtController, parent=None):
@@ -496,6 +502,8 @@ class SearchPanel(QWidget):
         left_layout.addWidget(self._result_count_lbl)
         self._results_list = QListWidget()
         self._results_list.currentRowChanged.connect(self._on_result_selected)
+        self._results_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._results_list.customContextMenuRequested.connect(self._on_context_menu)
         left_layout.addWidget(self._results_list)
         self._show_more_btn = QPushButton("Show more...")
         self._show_more_btn.setVisible(False)
@@ -526,6 +534,42 @@ class SearchPanel(QWidget):
         self._meta_lbl.setStyleSheet("color: #666; font-size: 11px;")
         right_layout.addWidget(self._meta_lbl)
 
+        # Action buttons row
+        action_row = QHBoxLayout()
+        self._copy_text_btn = QPushButton("Copy text")
+        self._copy_text_btn.setFixedHeight(28)
+        self._copy_text_btn.setEnabled(False)
+        self._copy_text_btn.clicked.connect(self._copy_hit_text)
+        action_row.addWidget(self._copy_text_btn)
+
+        self._copy_source_btn = QPushButton("Copy source")
+        self._copy_source_btn.setFixedHeight(28)
+        self._copy_source_btn.setEnabled(False)
+        self._copy_source_btn.clicked.connect(self._copy_hit_source)
+        action_row.addWidget(self._copy_source_btn)
+
+        self._copy_path_btn = QPushButton("Copy path")
+        self._copy_path_btn.setFixedHeight(28)
+        self._copy_path_btn.setEnabled(False)
+        self._copy_path_btn.clicked.connect(self._copy_hit_path)
+        action_row.addWidget(self._copy_path_btn)
+
+        action_row.addStretch()
+
+        self._send_wakeup_btn = QPushButton("Send to Wake-up")
+        self._send_wakeup_btn.setFixedHeight(28)
+        self._send_wakeup_btn.setEnabled(False)
+        self._send_wakeup_btn.clicked.connect(self._send_to_wakeup)
+        action_row.addWidget(self._send_wakeup_btn)
+
+        self._send_compress_btn = QPushButton("Send to Compress")
+        self._send_compress_btn.setFixedHeight(28)
+        self._send_compress_btn.setEnabled(False)
+        self._send_compress_btn.clicked.connect(self._send_to_compress)
+        action_row.addWidget(self._send_compress_btn)
+
+        right_layout.addLayout(action_row)
+
         splitter.addWidget(right)
         splitter.setSizes([300, 500])
         root.addWidget(splitter, 1)
@@ -545,6 +589,58 @@ class SearchPanel(QWidget):
         self._ctrl.busy_changed.connect(self._on_busy)
         self._ctrl.palace_switched.connect(self._on_palace_switched)
 
+    @property
+    def _current_hit(self) -> Optional[SearchHit]:
+        row = self._results_list.currentRow()
+        if 0 <= row < len(self._hits):
+            return self._hits[row]
+        return None
+
+    def _set_action_buttons_enabled(self, enabled: bool):
+        self._copy_text_btn.setEnabled(enabled)
+        self._copy_source_btn.setEnabled(enabled)
+        self._copy_path_btn.setEnabled(enabled)
+        self._send_wakeup_btn.setEnabled(enabled)
+        self._send_compress_btn.setEnabled(enabled)
+
+    def _on_context_menu(self, pos):
+        hit = self._current_hit
+        if hit is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Copy text", self._copy_hit_text)
+        menu.addAction("Copy source file", self._copy_hit_source)
+        menu.addAction(f"Copy path  ({hit.wing} / {hit.room})", self._copy_hit_path)
+        menu.addSeparator()
+        menu.addAction("Send to Wake-up", self._send_to_wakeup)
+        menu.addAction("Send to Compress", self._send_to_compress)
+        menu.exec_(self._results_list.viewport().mapToGlobal(pos))
+
+    def _copy_hit_text(self):
+        hit = self._current_hit
+        if hit:
+            QGuiApplication.clipboard().setText(hit.text)
+
+    def _copy_hit_source(self):
+        hit = self._current_hit
+        if hit:
+            QGuiApplication.clipboard().setText(hit.source_file)
+
+    def _copy_hit_path(self):
+        hit = self._current_hit
+        if hit:
+            QGuiApplication.clipboard().setText(f"{hit.wing} / {hit.room}")
+
+    def _send_to_wakeup(self):
+        hit = self._current_hit
+        if hit:
+            self._ctrl.navigate_to_wakeup.emit(hit.wing)
+
+    def _send_to_compress(self):
+        hit = self._current_hit
+        if hit:
+            self._ctrl.navigate_to_compress.emit(hit.wing)
+
     def _on_palace_switched(self, new_path: str):
         self._results_list.clear()
         self._preview.clear()
@@ -554,6 +650,7 @@ class SearchPanel(QWidget):
         self._result_count_lbl.setText("No results")
         self._show_more_btn.setVisible(False)
         self._empty_lbl.setVisible(True)
+        self._set_action_buttons_enabled(False)
 
     def _do_search(self):
         q = self._query_edit.text().strip()
@@ -630,6 +727,7 @@ class SearchPanel(QWidget):
     @Slot(int)
     def _on_result_selected(self, row: int):
         if row < 0 or row >= len(self._hits):
+            self._set_action_buttons_enabled(False)
             return
         hit = self._hits[row]
         self._preview.setPlainText(hit.text)
@@ -642,6 +740,7 @@ class SearchPanel(QWidget):
             f"Similarity: {hit.similarity:.3f}",
         ]
         self._meta_lbl.setText("  |  ".join(meta_parts))
+        self._set_action_buttons_enabled(True)
 
     @Slot(bool)
     def _on_busy(self, busy: bool):
@@ -730,10 +829,13 @@ class WakeUpPanel(QWidget):
         self._tokens_lbl.setText(f"~{result.tokens_est} tokens")
 
     def _copy_output(self):
-        from PySide6.QtGui import QGuiApplication
-
         cb = QGuiApplication.clipboard()
         cb.setText(self._output.toPlainText())
+
+    def prefill(self, wing: str = ""):
+        """Set wing field from external navigation (e.g. Search result)."""
+        if wing:
+            self._wing_edit.setText(wing)
 
     @Slot(bool)
     def _on_busy(self, busy: bool):
@@ -832,10 +934,13 @@ class CompressPanel(QWidget):
             self._stats_lbl.setText("")
 
     def _copy_output(self):
-        from PySide6.QtGui import QGuiApplication
-
         cb = QGuiApplication.clipboard()
         cb.setText(self._output.toPlainText())
+
+    def prefill(self, wing: str = ""):
+        """Set wing field from external navigation (e.g. Search result)."""
+        if wing:
+            self._wing_edit.setText(wing)
 
     @Slot(bool)
     def _on_busy(self, busy: bool):
@@ -1144,6 +1249,8 @@ class MainWindow(QMainWindow):
         self._ctrl.busy_changed.connect(self._on_busy)
         self._ctrl.mine_finished.connect(self._on_mine_finished)
         self._ctrl.palace_switched.connect(self._on_palace_switched)
+        self._ctrl.navigate_to_wakeup.connect(self._on_navigate_to_wakeup)
+        self._ctrl.navigate_to_compress.connect(self._on_navigate_to_compress)
 
     @Slot(str)
     def _on_palace_switched(self, new_path: str):
@@ -1165,3 +1272,15 @@ class MainWindow(QMainWindow):
             # Auto-switch to Status tab after a successful mine
             self._tabs.setCurrentWidget(self._status_panel)
             self._statusbar.showMessage("Mine complete -- status updated.", 5000)
+
+    @Slot(str)
+    def _on_navigate_to_wakeup(self, wing: str):
+        self._wakeup_panel.prefill(wing=wing)
+        self._tabs.setCurrentWidget(self._wakeup_panel)
+        self._statusbar.showMessage(f"Wake-up: wing set to '{wing}'", 4000)
+
+    @Slot(str)
+    def _on_navigate_to_compress(self, wing: str):
+        self._compress_panel.prefill(wing=wing)
+        self._tabs.setCurrentWidget(self._compress_panel)
+        self._statusbar.showMessage(f"Compress: wing set to '{wing}'", 4000)

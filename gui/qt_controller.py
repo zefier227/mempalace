@@ -277,6 +277,8 @@ class QtController(QObject):
     busy_changed = Signal(bool)
     error = Signal(str)
     palace_switched = Signal(str)  # new palace path
+    navigate_to_wakeup = Signal(str)  # wing
+    navigate_to_compress = Signal(str)  # wing
 
     def __init__(self, palace_path: Optional[str] = None, parent=None):
         super().__init__(parent)
