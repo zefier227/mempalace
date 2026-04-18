@@ -191,8 +191,7 @@ class AdapterError(Exception):
 class SearchHit:
     """One raw search result — mirrors exactly what CLI search() shows.
 
-    Fields come straight from ChromaDB via search_raw(): no closet boost,
-    no effective-distance, no enrichment, no hybrid re-rank.
+    Fields come straight from ChromaDB via search_raw() — raw search results only.
     """
 
     text: str
@@ -664,8 +663,7 @@ class MemPalaceAdapter:
     ) -> SearchResult:
         """Raw search — identical behaviour to CLI ``mempalace search``.
 
-        Uses search_raw() (direct ChromaDB query, no closets, no BM25,
-        no enrichment, no over-fetch).  Returns a flat list of SearchHit
+        Uses search_raw() (direct ChromaDB query, flat results in ChromaDB native order).  Returns a flat list of SearchHit
         objects in ChromaDB native order (distance ascending).
 
         Args:

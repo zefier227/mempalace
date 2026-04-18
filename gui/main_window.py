@@ -2,12 +2,15 @@
 gui/main_window.py -- MemPalace MVP single-window GUI.
 ======================================================
 
-One QMainWindow with a QTabWidget that hosts four panels:
+One QMainWindow with a QTabWidget that hosts seven panels:
 
-  InitPanel    -- set palace path, run safe_init()
-  MinePanel    -- pick a project dir, run mine, see live progress
-  StatusPanel  -- palace overview (wings / rooms / drawer counts)
-  SearchPanel  -- natural-language search with result previews
+  InitPanel       -- set palace path, run safe_init()
+  MinePanel       -- pick a project dir, run mine, see live progress
+  StatusPanel     -- palace overview (wings / rooms / drawer counts)
+  SearchPanel     -- natural-language search with result previews
+  WakeUpPanel     -- L0+L1 wake-up text
+  CompressPanel   -- AAAK Dialect compression
+  ContextPackPanel -- derive artifacts from raw text
 
 All heavy work is delegated to QtController (which delegates to
 MemPalaceAdapter).  This file contains ZERO business logic.
@@ -426,7 +429,6 @@ class SearchPanel(QWidget):
 
     Mirrors CLI ``mempalace search`` behaviour exactly:
     flat hit list, raw similarity, verbatim drawer text in preview.
-    No grouping, no excerpts, no explainability, no threshold.
     """
 
     def __init__(self, controller: QtController, parent=None):
@@ -648,7 +650,7 @@ class SearchPanel(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# 5. ContextPackPanel
+# 5. WakeUpPanel
 # ---------------------------------------------------------------------------
 
 
@@ -736,6 +738,11 @@ class WakeUpPanel(QWidget):
     @Slot(bool)
     def _on_busy(self, busy: bool):
         self._gen_btn.setEnabled(not busy)
+
+
+# ---------------------------------------------------------------------------
+# 6. CompressPanel
+# ---------------------------------------------------------------------------
 
 
 class CompressPanel(QWidget):
@@ -833,6 +840,11 @@ class CompressPanel(QWidget):
     @Slot(bool)
     def _on_busy(self, busy: bool):
         self._gen_btn.setEnabled(not busy)
+
+
+# ---------------------------------------------------------------------------
+# 7. ContextPackPanel
+# ---------------------------------------------------------------------------
 
 
 class ContextPackPanel(QWidget):

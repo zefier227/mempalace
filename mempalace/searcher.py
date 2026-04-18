@@ -16,10 +16,6 @@ from pathlib import Path
 
 from .palace import get_closets_collection, get_collection
 
-# Closet pointer line format: "topic|entities|→drawer_id_a,drawer_id_b"
-# Multiple lines may join with newlines inside one closet document.
-_CLOSET_DRAWER_REF_RE = re.compile(r"→([\w,]+)")
-
 logger = logging.getLogger("mempalace_mcp")
 
 
@@ -141,85 +137,6 @@ def build_where_filter(wing: str = None, room: str = None) -> dict:
     elif room:
         return {"room": room}
     return {}
-
-
-def _extract_drawer_ids_from_closet(closet_doc: str) -> list:
-    """Parse all `→drawer_id_a,drawer_id_b` pointers out of a closet document.
-
-    Preserves order and dedupes.
-    """
-    seen: dict = {}
-    for match in _CLOSET_DRAWER_REF_RE.findall(closet_doc):
-        for did in match.split(","):
-            did = did.strip()
-            if did and did not in seen:
-                seen[did] = None
-    return list(seen.keys())
-
-
-def _expand_with_neighbors(drawers_col, matched_doc: str, matched_meta: dict, radius: int = 1):
-    """Expand a matched drawer with its ±radius sibling chunks in the same source file.
-
-    Motivation — "drawer-grep context" feature: a closet hit returns one
-    drawer, but the chunk boundary may clip mid-thought (e.g., the matched
-    chunk says "here's a breakdown:" and the actual breakdown lives in the
-    next chunk). Fetching the small neighborhood around the match gives
-    callers enough context without forcing a follow-up ``get_drawer`` call.
-
-    Returns a dict with:
-        ``text``            combined chunks in chunk_index order
-        ``drawer_index``    the matched chunk's index in the source file
-        ``total_drawers``   total drawer count for the source file (or None)
-
-    On any ChromaDB failure or missing metadata, falls back to returning the
-    matched drawer alone so search never breaks because neighbor expansion
-    failed.
-    """
-    src = matched_meta.get("source_file")
-    chunk_idx = matched_meta.get("chunk_index")
-    if not src or not isinstance(chunk_idx, int):
-        return {"text": matched_doc, "drawer_index": chunk_idx, "total_drawers": None}
-
-    target_indexes = [chunk_idx + offset for offset in range(-radius, radius + 1)]
-    try:
-        neighbors = drawers_col.get(
-            where={
-                "$and": [
-                    {"source_file": src},
-                    {"chunk_index": {"$in": target_indexes}},
-                ]
-            },
-            include=["documents", "metadatas"],
-        )
-    except Exception:
-        return {"text": matched_doc, "drawer_index": chunk_idx, "total_drawers": None}
-
-    indexed_docs = []
-    for doc, meta in zip(neighbors.get("documents") or [], neighbors.get("metadatas") or []):
-        ci = meta.get("chunk_index")
-        if isinstance(ci, int):
-            indexed_docs.append((ci, doc))
-    indexed_docs.sort(key=lambda pair: pair[0])
-
-    if not indexed_docs:
-        combined_text = matched_doc
-    else:
-        combined_text = "\n\n".join(doc for _, doc in indexed_docs)
-
-    # Cheap total_drawers lookup: metadata-only scan of the source file.
-    total_drawers = None
-    try:
-        all_meta = drawers_col.get(where={"source_file": src}, include=["metadatas"])
-        ids = all_meta.get("ids") or []
-        total_drawers = len(ids) if ids else None
-    except Exception:
-        pass
-
-    return {
-        "text": combined_text,
-        "drawer_index": chunk_idx,
-        "total_drawers": total_drawers,
-    }
 
 
 def search(query: str, palace_path: str, wing: str = None, room: str = None, n_results: int = 5):

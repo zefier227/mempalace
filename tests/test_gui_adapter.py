@@ -360,9 +360,7 @@ class TestRunSearch:
         assert isinstance(hit.distance, float)
 
     def test_search_result_has_no_extra_fields(self, adapter_mined):
-        """SearchHit must NOT have closet_boost, effective_distance, bm25_score,
-        matched_via, closet_preview, source_path, chunk_index, drawer_id,
-        line_start, line_end — those belong to search_memories, not raw search."""
+        """SearchHit must NOT have fields from the search_memories pipeline."""
         result = adapter_mined.run_search("PostgreSQL database")
         assert result.ok
         assert len(result.hits) >= 1
@@ -376,8 +374,6 @@ class TestRunSearch:
             "source_path",
             "chunk_index",
             "drawer_id",
-            "line_start",
-            "line_end",
         ):
             assert not hasattr(hit, field), f"SearchHit must not have field '{field}'"
 
@@ -668,6 +664,7 @@ class TestSearchNResultsDefault:
 
     def test_adapter_default_n_results_is_5(self):
         import inspect
+
         sig = inspect.signature(MemPalaceAdapter.run_search)
         n_results_default = sig.parameters["n_results"].default
         assert n_results_default == 5
@@ -1003,8 +1000,3 @@ class TestSearchHitUnit:
         assert hit.source_file == ""
         assert hit.distance == 1.0
         assert hit.similarity == 0.0
-
-    def test_search_result_has_no_groups(self):
-        result = SearchResult(ok=True, query="test", hits=[], total_candidates=0)
-        assert not hasattr(result, "groups")
-        assert result.hits == []

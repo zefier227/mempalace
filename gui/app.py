@@ -87,11 +87,9 @@ def main(argv: list[str] | None = None) -> int:
     # ------------------------------------------------------------------
     try:
         from PySide6.QtWidgets import QApplication
-        from PySide6.QtCore import Qt
     except ImportError as exc:  # pragma: no cover
         print(
-            f"ERROR: PySide6 is not installed.  "
-            f"Run: pip install 'PySide6>=6.7'\n{exc}",
+            f"ERROR: PySide6 is not installed.  Run: pip install 'PySide6>=6.7'\n{exc}",
             file=sys.stderr,
         )
         return 2
