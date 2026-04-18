@@ -86,13 +86,24 @@ def main(argv: list[str] | None = None) -> int:
     # Qt setup -- import *after* logging so early import errors are visible.
     # ------------------------------------------------------------------
     try:
-        from PySide6.QtWidgets import QApplication
+        import PySide6
     except ImportError as exc:  # pragma: no cover
         print(
             f"ERROR: PySide6 is not installed.  Run: pip install 'PySide6>=6.7'\n{exc}",
             file=sys.stderr,
         )
         return 2
+
+    # Inside a py2app bundle, Qt cannot find its platform plugins because
+    # the auto-generated qt.conf points to a non-existent directory.  Set
+    # QT_PLUGIN_PATH explicitly so the Cocoa plugin is discoverable.
+    if getattr(sys, "frozen", False):
+        plugin_dir = os.path.join(os.path.dirname(PySide6.__file__), "Qt", "plugins")
+        if os.path.isdir(plugin_dir):
+            os.environ.setdefault("QT_PLUGIN_PATH", plugin_dir)
+            log.debug("Bundle: QT_PLUGIN_PATH=%s", plugin_dir)
+
+    from PySide6.QtWidgets import QApplication
 
     # Allow running headless (e.g. CI / offscreen tests)
     if "QT_QPA_PLATFORM" not in os.environ and sys.platform != "darwin":

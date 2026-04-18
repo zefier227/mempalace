@@ -13,10 +13,7 @@ These tests use function-scoped fixtures so each test gets a clean palace.
 All tests must complete within the pytest-timeout (120 s).
 """
 
-import os
 import queue
-import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -26,8 +23,6 @@ import pytest
 from mempalace.gui_adapter import (
     MemPalaceAdapter,
     MineHandle,
-    MineProgressEvent,
-    SearchHit,
     SearchResult,
     _parse_mine_line,
 )
@@ -236,7 +231,7 @@ class TestSearchAfterMine:
         assert len(s.hits) >= 1, "Second mine result not visible — stale client after double mine"
 
     def test_search_hit_fields_populated_after_mine(self, isolated_palace, simple_project):
-        """SearchHit must have source_path, drawer_id, and chunk_index populated."""
+        """SearchHit must have the 6 CLI-parity fields populated after mine."""
         adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
         adapter.run_mine_projects(str(simple_project))
 
@@ -245,44 +240,31 @@ class TestSearchAfterMine:
         assert len(search.hits) >= 1
 
         hit = search.hits[0]
-        # source_path: full absolute path to the source file
-        assert isinstance(hit.source_path, str), "source_path must be a str"
-        assert hit.source_path != "", (
-            "source_path is empty — check that searcher.py promotes "
-            "_source_file_full to source_path before stripping internals"
-        )
-        # drawer_id: stable ChromaDB document ID
-        assert isinstance(hit.drawer_id, str), "drawer_id must be a str"
-        assert hit.drawer_id != "", (
-            "drawer_id is empty — check that searcher.py captures query IDs "
-            "and sets entry['drawer_id']"
-        )
-        # chunk_index: integer (0 for single-chunk files)
-        assert hit.chunk_index is not None, "chunk_index should not be None after mine"
-        assert isinstance(hit.chunk_index, int), "chunk_index must be an int"
+        assert isinstance(hit.text, str) and hit.text != "", "text must be non-empty"
+        assert isinstance(hit.wing, str), "wing must be a str"
+        assert isinstance(hit.room, str), "room must be a str"
+        assert isinstance(hit.source_file, str) and hit.source_file != "", "source_file must be non-empty"
+        assert isinstance(hit.similarity, float), "similarity must be a float"
+        assert isinstance(hit.distance, float), "distance must be a float"
 
-    def test_source_path_is_absolute(self, isolated_palace, simple_project):
+    def test_source_file_is_basename(self, isolated_palace, simple_project):
         adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
         adapter.run_mine_projects(str(simple_project))
         search = adapter.run_search("GraphQL")
         assert search.ok and search.hits
         hit = search.hits[0]
-        if hit.source_path:
-            assert os.path.isabs(hit.source_path), (
-                f"source_path should be absolute, got: {hit.source_path!r}"
-            )
+        assert hit.source_file, "source_file should not be empty after mine"
 
-    def test_source_file_basename_matches_source_path(self, isolated_palace, simple_project):
+    def test_search_hit_has_no_removed_fields(self, isolated_palace, simple_project):
+        """SearchHit must NOT have source_path, drawer_id, chunk_index (removed in parity fix)."""
         adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
         adapter.run_mine_projects(str(simple_project))
         search = adapter.run_search("PostgreSQL")
         assert search.ok and search.hits
         hit = search.hits[0]
-        if hit.source_path and hit.source_file:
-            assert Path(hit.source_path).name == hit.source_file, (
-                f"basename of source_path ({Path(hit.source_path).name!r}) "
-                f"must equal source_file ({hit.source_file!r})"
-            )
+        assert not hasattr(hit, "source_path"), "source_path was removed for CLI parity"
+        assert not hasattr(hit, "drawer_id"), "drawer_id was removed for CLI parity"
+        assert not hasattr(hit, "chunk_index"), "chunk_index was removed for CLI parity"
 
 
 # ---------------------------------------------------------------------------
@@ -481,7 +463,6 @@ class TestBackendController:
         """The session-scoped ctrl_mined already mined; verify MINE_DONE payload."""
         # The session fixture validates MINE_DONE before yielding, so the
         # event is already confirmed. We just check the controller is alive.
-        from mempalace.gui_adapter import MineResult
         assert ctrl_mined._started is True
         # Run status to confirm the mined palace is accessible
         status_done = threading.Event()
@@ -536,7 +517,6 @@ class TestBackendController:
 
     def test_search_done_event_payload_is_search_result(self, ctrl_mined):
         """search() produces a SEARCH_DONE event with a SearchResult payload."""
-        from mempalace.gui_adapter import SearchResult
 
         done_event = threading.Event()
         result_holder = {}
@@ -839,7 +819,7 @@ class TestWarmClientRegression:
         )
 
     def test_enriched_fields_populated_after_warm_mine(self, isolated_palace, simple_project):
-        """SearchHit enriched fields must be present after warm-client mine cycle."""
+        """SearchHit fields must be present after warm-client mine cycle."""
         adapter = MemPalaceAdapter(palace_path=str(isolated_palace))
         # Warm with failing search
         adapter.run_search("anything")
@@ -850,15 +830,11 @@ class TestWarmClientRegression:
         assert result.ok and result.hits
 
         hit = result.hits[0]
-        # source_path: must be non-empty absolute path
-        assert hit.source_path, "source_path empty after warm mine cycle"
-        assert os.path.isabs(hit.source_path), f"source_path not absolute: {hit.source_path!r}"
-        # drawer_id: must be non-empty string
-        assert hit.drawer_id, "drawer_id empty after warm mine cycle"
-        # chunk_index: must be an int
-        assert isinstance(hit.chunk_index, int), (
-            f"chunk_index is {type(hit.chunk_index).__name__}, expected int"
-        )
+        # source_file: must be non-empty string
+        assert hit.source_file, "source_file empty after warm mine cycle"
+        # similarity and distance: must be floats
+        assert isinstance(hit.similarity, float), f"similarity is {type(hit.similarity).__name__}, expected float"
+        assert isinstance(hit.distance, float), f"distance is {type(hit.distance).__name__}, expected float"
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,8 @@ All tests use temporary directories; nothing written to the real palace.
 """
 
 import json
+import os
+import sys
 import time
 
 import pytest
@@ -1000,3 +1002,87 @@ class TestSearchHitUnit:
         assert hit.source_file == ""
         assert hit.distance == 1.0
         assert hit.similarity == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 15. Packaging validation (source-run and .app bundle)
+# ---------------------------------------------------------------------------
+
+
+class TestPackagingValidation:
+    """Verify runtime prerequisites that affect both source-run and .app."""
+
+    def test_child_env_sets_pythonhome_in_bundle_mode(self):
+        """_child_env must set PYTHONHOME when running inside a .app bundle."""
+        adapter = MemPalaceAdapter(palace_path="/tmp/test_pack")
+        env = adapter._child_env()
+        if getattr(sys, "frozen", False) and ".app/Contents/MacOS/" in sys.executable:
+            assert "PYTHONHOME" in env
+        else:
+            assert "PYTHONHOME" not in env
+
+    def test_child_env_sets_palace_path(self):
+        adapter = MemPalaceAdapter(palace_path="/tmp/test_pack")
+        env = adapter._child_env()
+        assert env["MEMPALACE_PALACE_PATH"].endswith("test_pack")
+
+    def test_child_env_does_not_mutate_os_environ(self):
+        adapter = MemPalaceAdapter(palace_path="/tmp/test_pack")
+        before = dict(os.environ)
+        adapter._child_env()
+        after = dict(os.environ)
+        assert before == after
+
+    def test_resolve_python_prefers_macos_python_in_bundle(self):
+        """When frozen and inside .app, MacOS/python must be checked first."""
+        import unittest.mock
+
+        saved_frozen = getattr(sys, "frozen", None)
+        saved_exec = sys.executable
+        try:
+            sys.frozen = True
+            sys.executable = "/fake/MemPalace.app/Contents/MacOS/MemPalace"
+            from mempalace.gui_adapter import _resolve_python
+
+            with unittest.mock.patch("os.access", return_value=True):
+                from pathlib import Path as _Path
+
+                with unittest.mock.patch.object(_Path, "is_file", return_value=True):
+                    path = _resolve_python()
+                    assert "MacOS/python" in path or path.endswith("python")
+        finally:
+            if saved_frozen is None:
+                delattr(sys, "frozen")
+            else:
+                sys.frozen = saved_frozen
+            sys.executable = saved_exec
+
+    def test_setup_py_plist_versions_match(self):
+        """CFBundleShortVersionString and CFBundleVersion must match."""
+        import ast
+
+        setup_path = os.path.join(os.path.dirname(__file__), "..", "setup.py")
+        with open(setup_path) as f:
+            content = f.read()
+        short = None
+        version = None
+        for node in ast.walk(ast.parse(content)):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value.startswith("3.") and node.value.count(".") == 2:
+                    if short is None:
+                        short = node.value
+                    elif version is None and node.value == short:
+                        version = node.value
+        from mempalace.version import __version__
+
+        assert short == __version__, f"setup.py plist version {short} != version.py {__version__}"
+
+    def test_pyside6_plugin_dir_exists(self):
+        """PySide6 platform plugins must be importable (source-run check)."""
+        import PySide6
+
+        plugin_dir = os.path.join(os.path.dirname(PySide6.__file__), "Qt", "plugins", "platforms")
+        assert os.path.isdir(plugin_dir), f"PySide6 platform plugins not found at {plugin_dir}"
+        assert any("cocoa" in f.lower() for f in os.listdir(plugin_dir)), (
+            "libqcocoa.dylib not found in PySide6 platform plugins"
+        )

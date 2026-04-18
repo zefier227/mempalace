@@ -129,9 +129,17 @@ def _resolve_python() -> str:
             return False
         return True
 
-    # Step 0: py2app .app bundle — find the real Python in Frameworks/.
+    # Step 0: py2app .app bundle — find the real Python interpreter.
+    # The launcher at Contents/MacOS/AppName is NOT a general-purpose
+    # Python interpreter and cannot run -m flags.  Instead, look for
+    # the python binary that py2app places alongside it.
     if getattr(sys, "frozen", False) and ".app/Contents/MacOS/" in sys.executable:
         contents_dir = Path(sys.executable).resolve().parent.parent
+        macos_python = contents_dir / "MacOS" / "python"
+        if macos_python.is_file() and os.access(str(macos_python), os.X_OK):
+            logger.debug("Bundle Python interpreter (MacOS/python): %s", macos_python)
+            return str(macos_python)
+        # Fallback: scan Frameworks for a versioned python binary.
         frameworks_dir = contents_dir / "Frameworks"
         if frameworks_dir.is_dir():
             for fw in sorted(frameworks_dir.glob("Python*.framework")):
@@ -146,13 +154,9 @@ def _resolve_python() -> str:
                         if py_bin.is_file() and os.access(str(py_bin), os.X_OK):
                             logger.debug("Bundle Python interpreter: %s", py_bin)
                             return str(py_bin)
-        macos_python = contents_dir / "MacOS" / "python"
-        if macos_python.is_file() and os.access(str(macos_python), os.X_OK):
-            logger.debug("Bundle Python interpreter (MacOS/python): %s", macos_python)
-            return str(macos_python)
         logger.warning(
             "Running inside .app bundle but could not find Python "
-            "interpreter in Frameworks/ — subprocesses may fail."
+            "interpreter in MacOS/ or Frameworks/ — subprocesses may fail."
         )
 
     candidates = [sys.executable]

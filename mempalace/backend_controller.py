@@ -242,7 +242,6 @@ class BackendController:
         wing: Optional[str] = None,
         room: Optional[str] = None,
         n_results: int = 5,
-        max_distance: float = 1.5,
     ) -> int:
         """Enqueue a search. Returns request_id for correlation.
 
@@ -253,7 +252,7 @@ class BackendController:
         self._post(BackendEvent(type=EventType.SEARCH_STARTED, payload={"query": query}, request_id=rid))
         self._work_q.put(_WorkItem(
             kind="search",
-            kwargs=dict(query=query, wing=wing, room=room, n_results=n_results, max_distance=max_distance),
+            kwargs=dict(query=query, wing=wing, room=room, n_results=n_results),
             request_id=rid,
         ))
         return rid

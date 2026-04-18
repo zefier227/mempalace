@@ -34,10 +34,10 @@ import shutil
 import subprocess
 import sys
 
-sys.setrecursionlimit(6000)
+sys.setrecursionlimit(6000)  # noqa: E402
 
-from setuptools import setup
-from py2app.build_app import py2app as _py2app
+from setuptools import setup  # noqa: E402
+from py2app.build_app import py2app as _py2app  # noqa: E402
 
 
 NAMESPACE_PACKAGES = ["google", "opentelemetry"]
@@ -55,29 +55,36 @@ class py2app(_py2app):
         contents = os.path.join(dist_dir, "Contents")
         macos_dir = os.path.join(contents, "MacOS")
         frameworks_python = os.path.join(
-            contents, "Frameworks", "Python3.framework",
-            "Versions", "3.9", "Python3",
+            contents,
+            "Frameworks",
+            "Python3.framework",
+            "Versions",
+            "3.9",
+            "Python3",
         )
         python_bin = os.path.join(macos_dir, "python")
         site_packages = os.path.join(
-            contents, "Resources", "lib", "python3.9",
+            contents,
+            "Resources",
+            "lib",
+            "python3.9",
         )
-        user_site = os.path.expanduser(
-            "~/Library/Python/3.9/lib/python/site-packages"
-        )
+        user_site = os.path.expanduser("~/Library/Python/3.9/lib/python/site-packages")
 
         # Fix 1: install_name_tool on the python binary
         if os.path.isfile(python_bin) and os.path.isfile(frameworks_python):
             old_ref = "@executable_path/../../../../Python3"
-            new_ref = (
-                "@executable_path/../Frameworks/"
-                "Python3.framework/Versions/3.9/Python3"
-            )
+            new_ref = "@executable_path/../Frameworks/Python3.framework/Versions/3.9/Python3"
             try:
-                subprocess.check_call([
-                    "install_name_tool", "-change",
-                    old_ref, new_ref, python_bin,
-                ])
+                subprocess.check_call(
+                    [
+                        "install_name_tool",
+                        "-change",
+                        old_ref,
+                        new_ref,
+                        python_bin,
+                    ]
+                )
                 print("  [post-build] Fixed python binary dylib reference")
             except subprocess.CalledProcessError as e:
                 print(f"  [post-build] WARNING: install_name_tool failed: {e}")
@@ -92,34 +99,53 @@ class py2app(_py2app):
 
         # Fix 2b: remove namespace package .pyc entries from python39.zip
         # so the full filesystem copies take precedence
-        zip_path = os.path.join(
-            contents, "Resources", "lib", "python39.zip"
-        )
+        zip_path = os.path.join(contents, "Resources", "lib", "python39.zip")
         if os.path.isfile(zip_path):
             import zipfile
+
             tmp_path = zip_path + ".tmp"
             try:
-                with zipfile.ZipFile(zip_path, 'r') as zin:
+                with zipfile.ZipFile(zip_path, "r") as zin:
                     keep = [
-                        n for n in zin.namelist()
+                        n
+                        for n in zin.namelist()
                         if not any(n.startswith(pkg + "/") for pkg in NAMESPACE_PACKAGES)
                     ]
-                    with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+                    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zout:
                         for item in keep:
                             zout.writestr(item, zin.read(item))
                 os.replace(tmp_path, zip_path)
-                print(f"  [post-build] Cleaned {len(NAMESPACE_PACKAGES)} namespace entries from zip")
+                print(
+                    f"  [post-build] Cleaned {len(NAMESPACE_PACKAGES)} namespace entries from zip"
+                )
             except Exception as e:
                 print(f"  [post-build] WARNING: zip cleanup failed: {e}")
 
         # Fix 3: ad-hoc code-sign
         try:
-            subprocess.check_call([
-                "codesign", "--force", "--deep", "--sign", "-", dist_dir,
-            ])
+            subprocess.check_call(
+                [
+                    "codesign",
+                    "--force",
+                    "--deep",
+                    "--sign",
+                    "-",
+                    dist_dir,
+                ]
+            )
             print("  [post-build] Ad-hoc code-signed the bundle")
         except subprocess.CalledProcessError as e:
             print(f"  [post-build] WARNING: codesign failed: {e}")
+
+        # Fix 4: fix qt.conf so Qt can find its platform plugins
+        qt_plugins_dir = os.path.join(site_packages, "PySide6", "Qt", "plugins")
+        qt_conf_path = os.path.join(contents, "Resources", "qt.conf")
+        if os.path.isdir(qt_plugins_dir) and os.path.isfile(qt_conf_path):
+            rel = os.path.relpath(qt_plugins_dir, os.path.join(contents, "Resources"))
+            with open(qt_conf_path, "w") as f:
+                f.write("[Paths]\n")
+                f.write(f"Plugins = {rel}\n")
+            print(f"  [post-build] Fixed qt.conf -> Plugins = {rel}")
 
 
 APP = ["gui/app.py"]
@@ -184,6 +210,7 @@ OPTIONS = {
     "plist": {
         "CFBundleName": "MemPalace",
         "CFBundleShortVersionString": "3.3.0",
+        "CFBundleVersion": "3.3.0",
         "CFBundleIdentifier": "com.mempalace.app",
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundlePackageType": "APPL",
@@ -192,6 +219,7 @@ OPTIONS = {
         "NSHighResolutionCapable": True,
         "NSSupportsAutomaticGraphicsSwitching": True,
         "LSUIElement": False,
+        "LSArchitecturePriority": ["arm64", "x86_64"],
     },
 }
 
