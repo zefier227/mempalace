@@ -6,7 +6,7 @@ Test plan covers:
   2. safe_init()       — non-interactive init
   3. run_mine_projects() — subprocess mine with progress streaming
   4. run_mine_convos()  — subprocess mine for chat exports
-  5. run_search()       — direct Python API search
+  5. run_search()       — raw search parity with CLI
   6. run_status()       — structured status (no stdout)
   7. start/stop MCP server — subprocess lifecycle
   8. edge cases: missing palace, empty search, zero drawers
@@ -24,17 +24,12 @@ All tests use temporary directories; nothing written to the real palace.
 """
 
 import json
-import os
-import tempfile
 import time
-from pathlib import Path
 
 import pytest
 
 from mempalace.gui_adapter import (
     MemPalaceAdapter,
-    MineProgressEvent,
-    SearchFileGroup,
     SearchResult,
     SearchHit,
     PalaceStatus,
@@ -263,14 +258,13 @@ class TestRunMineProjects:
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
         result = adapter.run_mine_projects(str(tmp_project))
         assert result.ok
-        # 3 files in tmp_project → at least 1 drawer each
         assert result.drawers_filed >= 1
 
     def test_mine_records_wing(self, tmp_palace, tmp_project):
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
         result = adapter.run_mine_projects(str(tmp_project))
         assert result.ok
-        assert result.wing == "smoke_test"  # from mempalace.yaml
+        assert result.wing == "smoke_test"
 
     def test_mine_progress_callback(self, tmp_palace, tmp_project):
         """Progress callback must receive file events and at least one done event."""
@@ -290,9 +284,7 @@ class TestRunMineProjects:
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
         result = adapter.run_mine_projects(str(tmp_project), dry_run=True)
         assert result.ok
-        # After dry run, palace should have zero drawers
         status = adapter.run_status()
-        # No palace created in dry run (FileNotFoundError expected or 0 drawers)
         if status.ok:
             assert status.total_drawers == 0
 
@@ -303,15 +295,8 @@ class TestRunMineProjects:
         assert result.wing == "custom_wing"
 
     def test_mine_nonexistent_dir_returns_zero_files(self, tmp_palace):
-        """MemPalace mine on a nonexistent dir exits 0 and processes 0 files.
-
-        miner.scan_project() returns an empty list for missing dirs (os.walk
-        simply yields nothing), so this is considered a successful no-op
-        rather than an error at the CLI level. The adapter reflects that.
-        """
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
         result = adapter.run_mine_projects("/nonexistent/path/that/does/not/exist")
-        # No crash, returns ok (0 files is a valid outcome from upstream)
         assert result.error is None or result.ok is True
         assert result.files_processed == 0
 
@@ -322,7 +307,6 @@ class TestRunMineProjects:
         r2 = adapter.run_mine_projects(str(tmp_project))
         assert r1.ok
         assert r2.ok
-        # Second run: all files already filed → drawers_filed=0, files_skipped>0
         assert r2.files_skipped >= 1 or r2.drawers_filed == 0
 
 
@@ -345,7 +329,7 @@ class TestRunMineConvos:
 
 
 # ---------------------------------------------------------------------------
-# 5. run_search
+# 5. run_search — raw parity tests
 # ---------------------------------------------------------------------------
 
 
@@ -360,7 +344,6 @@ class TestRunSearch:
         result = adapter_mined.run_search("GraphQL REST API decision")
         assert result.ok
         assert len(result.hits) >= 1
-        # Top hit should contain the GraphQL mention
         top = result.hits[0]
         assert "GraphQL" in top.text or top.similarity > 0.3
 
@@ -376,22 +359,45 @@ class TestRunSearch:
         assert 0.0 <= hit.similarity <= 1.0
         assert isinstance(hit.distance, float)
 
-    def test_search_no_results_returns_empty(self, adapter_mined):
-        """Searching for something totally unrelated should return ok=True, hits=[]."""
-        result = adapter_mined.run_search(
-            "xkcd_unique_string_that_cannot_match_anything_1234567",
-            max_distance=0.01,  # very strict — forces no results
-        )
-        assert result.ok is True
-        assert len(result.hits) == 0
+    def test_search_result_has_no_extra_fields(self, adapter_mined):
+        """SearchHit must NOT have closet_boost, effective_distance, bm25_score,
+        matched_via, closet_preview, source_path, chunk_index, drawer_id,
+        line_start, line_end — those belong to search_memories, not raw search."""
+        result = adapter_mined.run_search("PostgreSQL database")
+        assert result.ok
+        assert len(result.hits) >= 1
+        hit = result.hits[0]
+        for field in (
+            "closet_boost",
+            "effective_distance",
+            "bm25_score",
+            "matched_via",
+            "closet_preview",
+            "source_path",
+            "chunk_index",
+            "drawer_id",
+            "line_start",
+            "line_end",
+        ):
+            assert not hasattr(hit, field), f"SearchHit must not have field '{field}'"
+
+    def test_search_no_results_with_tiny_collection(self, tmp_palace):
+        """On an empty/unmined palace, search returns ok=True with 0 hits."""
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_search("anything")
+        assert result.ok is False
 
     def test_search_wing_filter(self, adapter_mined):
-        result = adapter_mined.run_search(
-            "architecture database", wing="smoke_test"
-        )
+        result = adapter_mined.run_search("architecture database", wing="smoke_test")
         assert result.ok
         for hit in result.hits:
             assert hit.wing == "smoke_test"
+
+    def test_search_room_filter(self, adapter_mined):
+        result = adapter_mined.run_search("architecture database", room="decisions")
+        assert result.ok
+        for hit in result.hits:
+            assert hit.room == "decisions"
 
     def test_search_nonexistent_palace(self, tmp_path):
         adapter = MemPalaceAdapter(palace_path=str(tmp_path / "no_palace_here"))
@@ -408,6 +414,45 @@ class TestRunSearch:
         result = adapter_mined.run_search("Python")
         assert isinstance(result.total_candidates, int)
         assert result.total_candidates >= 0
+
+    def test_search_default_n_results_is_5(self):
+        """run_search default n_results must be 5 (same as CLI)."""
+        import inspect
+
+        sig = inspect.signature(MemPalaceAdapter.run_search)
+        assert sig.parameters["n_results"].default == 5
+
+    def test_search_returns_flat_hits_not_groups(self, adapter_mined):
+        """SearchResult must have hits as a flat list, no groups field."""
+        result = adapter_mined.run_search("GraphQL")
+        assert result.ok
+        assert isinstance(result.hits, list)
+        assert not hasattr(result, "groups")
+
+    def test_search_similarity_is_raw(self, adapter_mined):
+        """similarity must be raw (1 - raw_distance), not effective distance."""
+        result = adapter_mined.run_search("GraphQL")
+        assert result.ok
+        for hit in result.hits:
+            expected_sim = round(max(0.0, 1.0 - hit.distance), 3)
+            assert hit.similarity == expected_sim, (
+                f"similarity={hit.similarity} != raw 1-dist={expected_sim}"
+            )
+
+    def test_search_order_is_distance_ascending(self, adapter_mined):
+        """Hits must be ordered by distance ascending (ChromaDB native order)."""
+        result = adapter_mined.run_search("project", n_results=10)
+        assert result.ok
+        if len(result.hits) >= 2:
+            for i in range(len(result.hits) - 1):
+                assert result.hits[i].distance <= result.hits[i + 1].distance
+
+    def test_search_preview_text_is_raw_drawer(self, adapter_mined):
+        """hit.text must be the verbatim drawer text from ChromaDB."""
+        result = adapter_mined.run_search("GraphQL")
+        assert result.ok
+        assert len(result.hits) >= 1
+        assert "GraphQL" in result.hits[0].text or result.hits[0].similarity > 0.3
 
 
 # ---------------------------------------------------------------------------
@@ -442,24 +487,15 @@ class TestRunStatus:
     def test_status_room_count_accurate(self, adapter_mined):
         status = adapter_mined.run_status()
         assert status.ok
-        total_from_rooms = sum(
-            room.drawers
-            for wing in status.wings
-            for room in wing.rooms
-        )
+        total_from_rooms = sum(room.drawers for wing in status.wings for room in wing.rooms)
         assert total_from_rooms == status.total_drawers
 
     def test_status_chromadb_version_in_result(self, adapter_mined):
         status = adapter_mined.run_status()
         assert status.ok
-        assert "." in status.chromadb_version  # looks like a version string
+        assert "." in status.chromadb_version
 
     def test_status_does_not_print(self, adapter_mined):
-        """run_status must not print anything to stdout.
-
-        We use a manual stdout capture instead of capsys because the
-        adapter_mined fixture is session-scoped (capsys requires function scope).
-        """
         import io
         import sys
 
@@ -500,7 +536,6 @@ class TestMcpServer:
 
     def test_stop_when_not_running(self, tmp_palace):
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
-        # Should not raise even if server was never started
         result = adapter.stop_mcp_server()
         assert result.running is False
 
@@ -510,17 +545,11 @@ class TestMcpServer:
         try:
             assert s1.running
             assert s2.running
-            assert s1.pid == s2.pid  # second call returns existing server
+            assert s1.pid == s2.pid
         finally:
             adapter_mined.stop_mcp_server()
 
     def test_mcp_responds_to_ping(self, adapter_mined):
-        """MCP server must respond to JSON-RPC ping.
-
-        start_mcp_server() reads the initialize response during startup.
-        The ping response is therefore the NEXT line on stdout.
-        We loop with a 5-second deadline to tolerate any startup lag.
-        """
         import select
 
         start = adapter_mined.start_mcp_server()
@@ -532,7 +561,6 @@ class TestMcpServer:
             proc.stdin.write(ping + "\n")
             proc.stdin.flush()
 
-            # Read lines until we get id=99 (skip any buffered responses)
             deadline = time.time() + 5.0
             resp = None
             while time.time() < deadline:
@@ -587,14 +615,6 @@ class TestCheckPalaceExists:
 
 class TestThreadSafety:
     def test_serial_searches_all_succeed(self, adapter_mined):
-        """Serial searches (one at a time) always succeed.
-
-        ChromaDB 1.5.x uses a Rust backend with file-level locking —
-        concurrent PersistentClient instances to the same path can fail
-        with 'Could not connect to tenant'. The adapter (and therefore
-        the GUI) should issue searches serially from a single thread.
-        This test verifies the serial path is fully reliable.
-        """
         queries = ["GraphQL", "database", "architecture", "decisions", "budget"]
         results = [adapter_mined.run_search(q, n_results=2) for q in queries]
 
@@ -622,6 +642,7 @@ class TestStatusFileCount:
         status = adapter_mined.run_status()
         assert status.ok
         from mempalace.palace import get_collection
+
         col = get_collection(adapter_mined.palace_path, create=False)
         all_meta = []
         offset = 0
@@ -643,27 +664,13 @@ class TestStatusFileCount:
 
 
 class TestSearchNResultsDefault:
-    """Search must not silently cap at 8 results — the old default."""
+    """Search must default to n_results=5 (same as CLI)."""
 
-    def test_adapter_default_n_results_is_not_8(self):
+    def test_adapter_default_n_results_is_5(self):
         import inspect
-        from mempalace.gui_adapter import MemPalaceAdapter
         sig = inspect.signature(MemPalaceAdapter.run_search)
         n_results_default = sig.parameters["n_results"].default
-        assert n_results_default != 8, (
-            f"run_search default n_results is {n_results_default}, "
-            "expected != 8 to avoid the 'only 8 files' bug"
-        )
-
-    def test_qt_controller_default_n_results_is_not_8(self, qapp, tmp_palace):
-        import inspect
-        from gui.qt_controller import QtController
-        sig = inspect.signature(QtController.request_search)
-        n_results_default = sig.parameters["n_results"].default
-        assert n_results_default != 8, (
-            f"QtController.request_search default n_results is {n_results_default}, "
-            "expected != 8 to avoid the 'only 8 files' bug"
-        )
+        assert n_results_default == 5
 
     def test_search_respects_n_results(self, tmp_palace, tmp_project):
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
@@ -691,12 +698,14 @@ class TestInterpreterResolution:
 
     def test_resolve_python_returns_string(self):
         from mempalace.gui_adapter import _resolve_python
+
         path = _resolve_python()
         assert isinstance(path, str)
         assert len(path) > 0
 
     def test_resolve_python_not_xcode_cli_tools(self):
         from mempalace.gui_adapter import _resolve_python
+
         path = _resolve_python()
         assert "/Library/Developer/CommandLineTools" not in path, (
             f"Resolved to Xcode CLI tools stub: {path}"
@@ -706,6 +715,7 @@ class TestInterpreterResolution:
         from mempalace.gui_adapter import _resolve_python
         from os.path import isfile
         from os import access, X_OK
+
         path = _resolve_python()
         assert isfile(path), f"Not a file: {path}"
         assert access(path, X_OK), f"Not executable: {path}"
@@ -713,10 +723,13 @@ class TestInterpreterResolution:
     def test_resolve_python_has_mempalace(self):
         from mempalace.gui_adapter import _resolve_python, MemPalaceAdapter
         import subprocess
+
         adapter = MemPalaceAdapter(palace_path="/tmp/test_resolve_python")
         result = subprocess.run(
             [_resolve_python(), "-c", "import mempalace; print('ok')"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
             env=adapter._child_env(),
         )
         assert result.returncode == 0, (
@@ -727,10 +740,13 @@ class TestInterpreterResolution:
     def test_resolve_python_has_chromadb(self):
         from mempalace.gui_adapter import _resolve_python, MemPalaceAdapter
         import subprocess
+
         adapter = MemPalaceAdapter(palace_path="/tmp/test_resolve_python")
         result = subprocess.run(
             [_resolve_python(), "-c", "import chromadb; print('ok')"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
             env=adapter._child_env(),
         )
         assert result.returncode == 0, (
@@ -827,367 +843,168 @@ class TestPalaceSwitching:
 
 
 # ---------------------------------------------------------------------------
-# 13. Relevance threshold / no-results
+# 13. CLI vs GUI search parity
 # ---------------------------------------------------------------------------
 
 
-class TestSearchRelevanceThreshold:
-    """max_distance must filter weak results and produce honest no-results."""
+class TestCliGuiSearchParity:
+    """Same query on same palace must give identical results between CLI and GUI."""
 
-    def test_strict_threshold_fewer_results(self, adapter_mined):
-        loose = adapter_mined.run_search("project", max_distance=1.5)
-        strict = adapter_mined.run_search("project", max_distance=0.5)
-        assert len(strict.hits) <= len(loose.hits)
+    def test_parity_hit_count(self, adapter_mined):
+        from mempalace.searcher import search_raw
 
-    def test_nonsense_query_returns_empty_with_threshold(self, adapter_mined):
-        result = adapter_mined.run_search(
-            "zzzzxkcd_unique_no_match_99999",
-            max_distance=0.5,
+        query = "GraphQL"
+        cli_result = search_raw(
+            query,
+            adapter_mined.palace_path,
+            n_results=5,
         )
-        assert result.ok is True
-        assert len(result.hits) == 0
+        gui_result = adapter_mined.run_search(query, n_results=5)
+        assert gui_result.ok
+        assert "error" not in cli_result
+        assert len(gui_result.hits) == len(cli_result["results"])
 
-    def test_zero_threshold_shows_all(self, adapter_mined):
-        result_strict = adapter_mined.run_search("GraphQL", max_distance=0.5)
-        result_all = adapter_mined.run_search("GraphQL", max_distance=0.0)
-        assert len(result_all.hits) >= len(result_strict.hits)
+    def test_parity_hit_order(self, adapter_mined):
+        from mempalace.searcher import search_raw
 
-    def test_semantic_query_preserves_hits(self, adapter_mined):
-        result = adapter_mined.run_search("GraphQL REST API", max_distance=1.0)
-        assert result.ok
-        assert len(result.hits) >= 1
+        query = "database architecture"
+        cli_result = search_raw(
+            query,
+            adapter_mined.palace_path,
+            n_results=5,
+        )
+        gui_result = adapter_mined.run_search(query, n_results=5)
+        assert gui_result.ok
+        assert "error" not in cli_result
+        for i, (gui_hit, cli_hit) in enumerate(zip(gui_result.hits, cli_result["results"])):
+            assert gui_hit.source_file == cli_hit["source_file"], (
+                f"Hit {i}: GUI source_file={gui_hit.source_file} != CLI {cli_hit['source_file']}"
+            )
+
+    def test_parity_hit_text(self, adapter_mined):
+        from mempalace.searcher import search_raw
+
+        query = "GraphQL"
+        cli_result = search_raw(
+            query,
+            adapter_mined.palace_path,
+            n_results=5,
+        )
+        gui_result = adapter_mined.run_search(query, n_results=5)
+        assert gui_result.ok
+        assert "error" not in cli_result
+        for i, (gui_hit, cli_hit) in enumerate(zip(gui_result.hits, cli_result["results"])):
+            assert gui_hit.text == cli_hit["text"], f"Hit {i}: GUI text differs from CLI"
+
+    def test_parity_similarity(self, adapter_mined):
+        from mempalace.searcher import search_raw
+
+        query = "GraphQL"
+        cli_result = search_raw(
+            query,
+            adapter_mined.palace_path,
+            n_results=5,
+        )
+        gui_result = adapter_mined.run_search(query, n_results=5)
+        assert gui_result.ok
+        assert "error" not in cli_result
+        for i, (gui_hit, cli_hit) in enumerate(zip(gui_result.hits, cli_result["results"])):
+            assert gui_hit.similarity == cli_hit["similarity"], (
+                f"Hit {i}: GUI sim={gui_hit.similarity} != CLI sim={cli_hit['similarity']}"
+            )
+            assert gui_hit.distance == cli_hit["distance"], (
+                f"Hit {i}: GUI dist={gui_hit.distance} != CLI dist={cli_hit['distance']}"
+            )
+
+    def test_parity_wing_room_source(self, adapter_mined):
+        from mempalace.searcher import search_raw
+
+        query = "PostgreSQL"
+        cli_result = search_raw(
+            query,
+            adapter_mined.palace_path,
+            n_results=5,
+        )
+        gui_result = adapter_mined.run_search(query, n_results=5)
+        assert gui_result.ok
+        assert "error" not in cli_result
+        for i, (gui_hit, cli_hit) in enumerate(zip(gui_result.hits, cli_result["results"])):
+            assert gui_hit.wing == cli_hit["wing"]
+            assert gui_hit.room == cli_hit["room"]
+            assert gui_hit.source_file == cli_hit["source_file"]
+
+    def test_parity_wing_filter(self, adapter_mined):
+        from mempalace.searcher import search_raw
+
+        query = "project"
+        wing = "smoke_test"
+        cli_result = search_raw(
+            query,
+            adapter_mined.palace_path,
+            wing=wing,
+            n_results=5,
+        )
+        gui_result = adapter_mined.run_search(query, wing=wing, n_results=5)
+        assert gui_result.ok
+        assert "error" not in cli_result
+        assert len(gui_result.hits) == len(cli_result["results"])
+        for hit in gui_result.hits:
+            assert hit.wing == wing
+
+    def test_parity_room_filter(self, adapter_mined):
+        from mempalace.searcher import search_raw
+
+        query = "project"
+        room = "decisions"
+        cli_result = search_raw(
+            query,
+            adapter_mined.palace_path,
+            room=room,
+            n_results=5,
+        )
+        gui_result = adapter_mined.run_search(query, room=room, n_results=5)
+        assert gui_result.ok
+        assert "error" not in cli_result
+        assert len(gui_result.hits) == len(cli_result["results"])
+        for hit in gui_result.hits:
+            assert hit.room == room
 
 
 # ---------------------------------------------------------------------------
-# 14. Line range in search hits
+# 14. SearchHit unit tests (no palace needed)
 # ---------------------------------------------------------------------------
 
 
-class TestLineRangeInSearchHits:
-    """SearchHit.line_start/line_end must be populated for text files."""
+class TestSearchHitUnit:
+    """SearchHit must only contain raw search fields."""
 
-    def test_line_range_populated_for_text_file(self, tmp_palace, tmp_project):
-        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
-        adapter.run_mine_projects(str(tmp_project))
-        result = adapter.run_search("GraphQL")
-        assert result.ok
-        assert len(result.hits) >= 1
-        hit = result.hits[0]
-        if hit.source_path and Path(hit.source_path).is_file():
-            assert hit.line_start is not None
-            assert hit.line_end is not None
-            assert hit.line_start >= 1
+    def test_from_dict_basic(self):
+        d = {
+            "text": "some verbatim text",
+            "wing": "mywing",
+            "room": "myroom",
+            "source_file": "notes.md",
+            "distance": 0.35,
+            "similarity": 0.65,
+        }
+        hit = SearchHit.from_dict(d)
+        assert hit.text == "some verbatim text"
+        assert hit.wing == "mywing"
+        assert hit.room == "myroom"
+        assert hit.source_file == "notes.md"
+        assert hit.distance == 0.35
+        assert hit.similarity == 0.65
 
-    def test_line_range_fallback_chunk_index(self, tmp_palace, tmp_project):
-        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
-        adapter.run_mine_projects(str(tmp_project))
-        result = adapter.run_search("GraphQL")
-        assert result.ok
-        for hit in result.hits:
-            if hit.line_start is None:
-                assert hit.chunk_index is not None or hit.source_path == ""
+    def test_from_dict_missing_fields_use_defaults(self):
+        hit = SearchHit.from_dict({})
+        assert hit.text == ""
+        assert hit.wing == ""
+        assert hit.room == ""
+        assert hit.source_file == ""
+        assert hit.distance == 1.0
+        assert hit.similarity == 0.0
 
-
-# ---------------------------------------------------------------------------
-# 15. Search result aggregation / dedupe
-# ---------------------------------------------------------------------------
-
-
-class TestSearchAggregation:
-    """SearchFileGroup must aggregate chunk hits by source file."""
-
-    def test_single_file_multiple_chunks_grouped(self, tmp_palace, tmp_project):
-        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
-        adapter.run_mine_projects(str(tmp_project))
-        result = adapter.run_search("project", n_results=50)
-        assert result.ok
-        assert len(result.groups) >= 1
-        source_paths = [g.source_path for g in result.groups]
-        assert len(source_paths) == len(set(source_paths)), (
-            f"Duplicate source_path in groups: {source_paths}"
-        )
-
-    def test_two_different_files_both_shown(self, tmp_palace, tmp_project):
-        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
-        adapter.run_mine_projects(str(tmp_project))
-        result = adapter.run_search("architecture database GraphQL", n_results=50)
-        assert result.ok
-        assert len(result.groups) >= 2
-
-    def test_group_best_hit_is_highest_similarity(self, adapter_mined):
-        result = adapter_mined.run_search("GraphQL", n_results=50)
-        assert result.ok
-        for group in result.groups:
-            for extra in group.extra_hits:
-                assert group.best_hit.similarity >= extra.similarity, (
-                    f"best_hit sim={group.best_hit.similarity} < "
-                    f"extra sim={extra.similarity} for {group.source_file}"
-                )
-
-    def test_extra_hits_count_correct(self, adapter_mined):
-        result = adapter_mined.run_search("project", n_results=50)
-        assert result.ok
-        for group in result.groups:
-            assert group.hit_count == 1 + len(group.extra_hits)
-
-    def test_groups_field_populated(self, adapter_mined):
-        result = adapter_mined.run_search("GraphQL")
-        assert result.ok
-        assert len(result.groups) >= 1
-        assert isinstance(result.groups[0], SearchFileGroup)
-
-    def test_empty_search_returns_empty_groups(self, adapter_mined):
-        result = adapter_mined.run_search(
-            "zzzzxkcd_unique_no_match_99999", max_distance=0.01,
-        )
-        assert result.ok
-        assert len(result.groups) == 0
-
-    def test_group_snippet_nonempty(self, adapter_mined):
-        result = adapter_mined.run_search("GraphQL")
-        assert result.ok
-        for group in result.groups:
-            snippet = group.snippet()
-            assert len(snippet) > 0
-
-    def test_group_location_label(self, tmp_palace, tmp_project):
-        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
-        adapter.run_mine_projects(str(tmp_project))
-        result = adapter.run_search("GraphQL")
-        assert result.ok
-        for group in result.groups:
-            label = group.location_label()
-            assert isinstance(label, str)
-
-    def test_new_query_clears_old_groups(self, adapter_mined):
-        r1 = adapter_mined.run_search("GraphQL")
-        r2 = adapter_mined.run_search("database")
-        assert r1.ok and r2.ok
-        assert r2.groups is not r1.groups
-
-
-class TestAggregateHitsUnit:
-    """Unit tests for _aggregate_hits without needing a palace."""
-
-    def test_aggregate_single_hit(self):
-        hits = [SearchHit(
-            text="hello world", wing="w", room="r",
-            source_file="a.py", source_path="/a.py",
-            similarity=0.9, distance=0.1,
-        )]
-        groups = MemPalaceAdapter._aggregate_hits(hits)
-        assert len(groups) == 1
-        assert groups[0].hit_count == 1
-        assert groups[0].extra_hits == []
-
-    def test_aggregate_same_path_dedupes(self):
-        hits = [
-            SearchHit(text="chunk 1", wing="w", room="r",
-                      source_file="a.py", source_path="/a.py",
-                      similarity=0.9, distance=0.1),
-            SearchHit(text="chunk 2", wing="w", room="r",
-                      source_file="a.py", source_path="/a.py",
-                      similarity=0.7, distance=0.3),
-        ]
-        groups = MemPalaceAdapter._aggregate_hits(hits)
-        assert len(groups) == 1
-        assert groups[0].hit_count == 2
-        assert groups[0].best_hit.text == "chunk 1"
-        assert len(groups[0].extra_hits) == 1
-        assert groups[0].extra_hits[0].text == "chunk 2"
-
-    def test_aggregate_different_paths_separate(self):
-        hits = [
-            SearchHit(text="from a", wing="w", room="r",
-                      source_file="a.py", source_path="/a.py",
-                      similarity=0.9, distance=0.1),
-            SearchHit(text="from b", wing="w", room="r",
-                      source_file="b.py", source_path="/b.py",
-                      similarity=0.8, distance=0.2),
-        ]
-        groups = MemPalaceAdapter._aggregate_hits(hits)
-        assert len(groups) == 2
-        assert groups[0].source_path == "/a.py"
-        assert groups[1].source_path == "/b.py"
-
-    def test_aggregate_empty_input(self):
-        groups = MemPalaceAdapter._aggregate_hits([])
-        assert groups == []
-
-    def test_aggregate_preserves_order(self):
-        hits = [
-            SearchHit(text="first", wing="w", room="r",
-                      source_file="a.py", source_path="/a.py",
-                      similarity=0.9, distance=0.1),
-            SearchHit(text="second", wing="w", room="r",
-                      source_file="b.py", source_path="/b.py",
-                      similarity=0.8, distance=0.2),
-            SearchHit(text="third", wing="w", room="r",
-                      source_file="a.py", source_path="/a.py",
-                      similarity=0.7, distance=0.3),
-        ]
-        groups = MemPalaceAdapter._aggregate_hits(hits)
-        assert len(groups) == 2
-        assert groups[0].source_file == "a.py"
-        assert groups[0].hit_count == 2
-        assert groups[1].source_file == "b.py"
-
-    def test_group_snippet_method(self):
-        hit = SearchHit(
-            text="first line\nsecond line\n", wing="w", room="r",
-            source_file="a.py", source_path="/a.py",
-            similarity=0.9, distance=0.1,
-        )
-        group = SearchFileGroup(
-            source_path="/a.py", source_file="a.py",
-            best_hit=hit, extra_hits=[],
-        )
-        assert group.snippet() == "first line"
-
-    def test_group_location_label_with_lines(self):
-        hit = SearchHit(
-            text="text", wing="w", room="r",
-            source_file="a.py", source_path="/a.py",
-            similarity=0.9, distance=0.1,
-            line_start=10, line_end=15,
-        )
-        group = SearchFileGroup(
-            source_path="/a.py", source_file="a.py",
-            best_hit=hit, extra_hits=[],
-        )
-        assert group.location_label() == "L10–15"
-
-
-# ---------------------------------------------------------------------------
-# 16. Query-relevant excerpts and why-matched
-# ---------------------------------------------------------------------------
-
-
-class TestQueryExcerpt:
-    """_query_excerpt must pick the line most relevant to the query."""
-
-    def test_excerpt_picks_query_relevant_line(self):
-        from mempalace.gui_adapter import _query_excerpt
-        text = "# Header\nWe switched to GraphQL because REST was too chatty.\nNo match here.\n"
-        result = _query_excerpt(text, "GraphQL REST", max_len=80)
-        assert "GraphQL" in result or "REST" in result
-
-    def test_excerpt_different_queries_different_excerpts(self):
-        from mempalace.gui_adapter import _query_excerpt
-        text = (
-            "GraphQL API design decisions\n"
-            "Redis caching strategy overview\n"
-            "PostgreSQL tuning notes\n"
-        )
-        r1 = _query_excerpt(text, "Redis caching", max_len=80)
-        r2 = _query_excerpt(text, "PostgreSQL tuning", max_len=80)
-        assert "Redis" in r1
-        assert "PostgreSQL" in r2
-
-    def test_excerpt_fallback_when_no_match(self):
-        from mempalace.gui_adapter import _query_excerpt
-        text = "Some unrelated content about architecture\n"
-        result = _query_excerpt(text, "xyznonexistent", max_len=80)
-        assert len(result) > 0
-
-    def test_excerpt_empty_query(self):
-        from mempalace.gui_adapter import _query_excerpt
-        text = "Some content here\n"
-        result = _query_excerpt(text, "", max_len=80)
-        assert len(result) > 0
-
-    def test_excerpt_truncates_long_line(self):
-        from mempalace.gui_adapter import _query_excerpt
-        text = "X " * 200 + "GraphQL API" + " Y" * 200
-        result = _query_excerpt(text, "GraphQL", max_len=40)
-        assert len(result) <= 43  # max_len + "..."
-
-
-class TestSearchFileGroupWhyMatched:
-    """SearchFileGroup.why_matched() and excerpt() must be query-aware."""
-
-    def test_why_matched_with_query_terms(self):
-        hit = SearchHit(
-            text="We use GraphQL for the API layer", wing="w", room="r",
-            source_file="api.md", source_path="/api.md",
-            similarity=0.85, distance=0.15,
-            line_start=10, line_end=12,
-        )
-        group = SearchFileGroup(
-            source_path="/api.md", source_file="api.md",
-            best_hit=hit, extra_hits=[], query="GraphQL API",
-        )
-        why = group.why_matched()
-        assert "GraphQL" in why or "api" in why
-        assert "strong match" in why
-
-    def test_why_matched_weak_match(self):
-        hit = SearchHit(
-            text="Something vaguely related", wing="w", room="r",
-            source_file="misc.md", source_path="/misc.md",
-            similarity=0.25, distance=0.75,
-            chunk_index=3,
-        )
-        group = SearchFileGroup(
-            source_path="/misc.md", source_file="misc.md",
-            best_hit=hit, extra_hits=[], query="database",
-        )
-        why = group.why_matched()
-        assert "weak match" in why
-
-    def test_excerpt_query_aware(self):
-        hit = SearchHit(
-            text="Redis caching strategy\nPostgreSQL tuning notes\n",
-            wing="w", room="r",
-            source_file="db.md", source_path="/db.md",
-            similarity=0.8, distance=0.2,
-        )
-        group = SearchFileGroup(
-            source_path="/db.md", source_file="db.md",
-            best_hit=hit, extra_hits=[], query="Redis",
-        )
-        excerpt = group.excerpt()
-        assert "Redis" in excerpt
-
-    def test_excerpt_different_query_different_excerpt(self):
-        hit = SearchHit(
-            text="GraphQL API design\nRedis caching strategy\n",
-            wing="w", room="r",
-            source_file="arch.md", source_path="/arch.md",
-            similarity=0.8, distance=0.2,
-        )
-        g1 = SearchFileGroup(
-            source_path="/arch.md", source_file="arch.md",
-            best_hit=hit, extra_hits=[], query="GraphQL",
-        )
-        g2 = SearchFileGroup(
-            source_path="/arch.md", source_file="arch.md",
-            best_hit=hit, extra_hits=[], query="Redis",
-        )
-        assert "GraphQL" in g1.excerpt()
-        assert "Redis" in g2.excerpt()
-
-    def test_matched_terms(self):
-        hit = SearchHit(
-            text="We switched to GraphQL because REST was chatty",
-            wing="w", room="r",
-            source_file="api.md", source_path="/api.md",
-            similarity=0.9, distance=0.1,
-        )
-        group = SearchFileGroup(
-            source_path="/api.md", source_file="api.md",
-            best_hit=hit, extra_hits=[], query="GraphQL REST",
-        )
-        terms = group.matched_terms()
-        assert "graphql" in terms
-        assert "rest" in terms
-
-    def test_integration_excerpt_differs_between_files(self, tmp_palace, tmp_project):
-        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
-        adapter.run_mine_projects(str(tmp_project))
-        result = adapter.run_search("GraphQL database", n_results=50)
-        assert result.ok
-        if len(result.groups) >= 2:
-            e1 = result.groups[0].excerpt()
-            e2 = result.groups[1].excerpt()
-            assert e1 != e2 or len(result.groups) == 1
+    def test_search_result_has_no_groups(self):
+        result = SearchResult(ok=True, query="test", hits=[], total_candidates=0)
+        assert not hasattr(result, "groups")
+        assert result.hits == []

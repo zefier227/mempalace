@@ -15,8 +15,6 @@ MemPalaceAdapter).  This file contains ZERO business logic.
 
 from __future__ import annotations
 
-import os
-import re
 from pathlib import Path
 from typing import Optional, List
 
@@ -35,7 +33,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QSpinBox,
     QSplitter,
     QStatusBar,
@@ -53,7 +50,6 @@ from mempalace.gui_adapter import (
     MineProgressEvent,
     MineResult,
     PalaceStatus,
-    SearchFileGroup,
     SearchResult,
     SearchHit,
     ContextPackResult,
@@ -424,15 +420,21 @@ class StatusPanel(QWidget):
 
 
 class SearchPanel(QWidget):
-    """Natural-language search with result previews."""
+    """Natural-language search with verbatim result previews.
+
+    Mirrors CLI ``mempalace search`` behaviour exactly:
+    flat hit list, raw similarity, verbatim drawer text in preview.
+    No grouping, no excerpts, no explainability, no threshold.
+    """
 
     def __init__(self, controller: QtController, parent=None):
         super().__init__(parent)
         self._ctrl = controller
-        self._groups: List[SearchFileGroup] = []
+        self._hits: List[SearchHit] = []
         self._last_query: str = ""
         self._last_wing: Optional[str] = None
-        self._last_n_results: int = 50
+        self._last_room: Optional[str] = None
+        self._last_n_results: int = 5
         self._build_ui()
 
     def _build_ui(self):
@@ -458,10 +460,14 @@ class SearchPanel(QWidget):
 
         # Wing filter
         filter_row = QHBoxLayout()
-        filter_row.addWidget(_label("Wing filter (optional):"))
+        filter_row.addWidget(_label("Wing:"))
         self._wing_edit = QLineEdit()
-        self._wing_edit.setPlaceholderText("Leave blank to search all wings")
+        self._wing_edit.setPlaceholderText("Optional")
         filter_row.addWidget(self._wing_edit, 1)
+        filter_row.addWidget(_label("Room:"))
+        self._room_edit = QLineEdit()
+        self._room_edit.setPlaceholderText("Optional")
+        filter_row.addWidget(self._room_edit, 1)
         root.addLayout(filter_row)
 
         # Max results row
@@ -469,28 +475,11 @@ class SearchPanel(QWidget):
         max_row.addWidget(_label("Max results:"))
         self._n_results_spin = QSpinBox()
         self._n_results_spin.setRange(1, 500)
-        self._n_results_spin.setValue(50)
+        self._n_results_spin.setValue(5)
         self._n_results_spin.setToolTip("Maximum number of search results to return")
         max_row.addWidget(self._n_results_spin)
         max_row.addStretch()
         root.addLayout(max_row)
-
-        # Relevance threshold row
-        threshold_row = QHBoxLayout()
-        threshold_row.addWidget(_label("Min relevance:"))
-        self._threshold_slider = QSlider(Qt.Horizontal)
-        self._threshold_slider.setRange(0, 100)
-        self._threshold_slider.setValue(0)
-        self._threshold_slider.setToolTip(
-            "Filter out low-relevance results. 0 = show all, "
-            "higher = stricter (distance-based cutoff)"
-        )
-        threshold_row.addWidget(self._threshold_slider)
-        self._threshold_lbl = _label("any")
-        self._threshold_lbl.setFixedWidth(40)
-        threshold_row.addWidget(self._threshold_lbl)
-        self._threshold_slider.valueChanged.connect(self._on_threshold_changed)
-        root.addLayout(threshold_row)
 
         # Splitter: results list | preview
         splitter = QSplitter(Qt.Horizontal)
@@ -515,7 +504,6 @@ class SearchPanel(QWidget):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Preview header — makes it obvious which file/chunk you're looking at
         self._preview_header = QLabel("")
         self._preview_header.setWordWrap(True)
         self._preview_header.setStyleSheet(
@@ -524,47 +512,11 @@ class SearchPanel(QWidget):
         )
         right_layout.addWidget(self._preview_header)
 
-        # Why this matched — explanation block
-        self._why_matched_lbl = QLabel("")
-        self._why_matched_lbl.setWordWrap(True)
-        self._why_matched_lbl.setStyleSheet(
-            "font-size: 12px; color: #1a6b1a; padding: 4px 8px; "
-            "background: #e8f5e8; border-radius: 3px;"
-        )
-        right_layout.addWidget(self._why_matched_lbl)
-
-        # Best excerpt — highlighted match context
-        self._excerpt_lbl = QLabel("")
-        self._excerpt_lbl.setWordWrap(True)
-        self._excerpt_lbl.setStyleSheet(
-            "font-size: 12px; color: #333; padding: 4px 8px; "
-            "background: #fffbe6; border-left: 3px solid #f0c040;"
-        )
-        right_layout.addWidget(self._excerpt_lbl)
-
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
         self._preview.setFont(_MONO)
         right_layout.addWidget(self._preview)
 
-        # Chunk navigation inside a file group
-        chunk_nav = QHBoxLayout()
-        self._chunk_nav_lbl = QLabel("")
-        self._chunk_nav_lbl.setStyleSheet("color: #666; font-size: 11px;")
-        chunk_nav.addWidget(self._chunk_nav_lbl)
-        self._prev_chunk_btn = QPushButton("◀ Prev chunk")
-        self._prev_chunk_btn.setFixedHeight(24)
-        self._prev_chunk_btn.setVisible(False)
-        self._prev_chunk_btn.clicked.connect(self._on_prev_chunk)
-        chunk_nav.addWidget(self._prev_chunk_btn)
-        self._next_chunk_btn = QPushButton("Next chunk ▶")
-        self._next_chunk_btn.setFixedHeight(24)
-        self._next_chunk_btn.setVisible(False)
-        self._next_chunk_btn.clicked.connect(self._on_next_chunk)
-        chunk_nav.addWidget(self._next_chunk_btn)
-        right_layout.addLayout(chunk_nav)
-
-        # Meta below preview
         self._meta_lbl = QLabel("")
         self._meta_lbl.setWordWrap(True)
         self._meta_lbl.setStyleSheet("color: #666; font-size: 11px;")
@@ -577,8 +529,7 @@ class SearchPanel(QWidget):
         # Empty state
         self._empty_lbl = QLabel(
             "Type a query above and press Search.\n\n"
-            "No results? Make sure the palace has been mined first.\n"
-            "Tip: increase 'Max results' if you want more matches."
+            "No results? Make sure the palace has been mined first."
         )
         self._empty_lbl.setAlignment(Qt.AlignCenter)
         self._empty_lbl.setStyleSheet("color: #888; padding: 30px;")
@@ -594,13 +545,8 @@ class SearchPanel(QWidget):
         self._results_list.clear()
         self._preview.clear()
         self._preview_header.clear()
-        self._why_matched_lbl.clear()
-        self._excerpt_lbl.clear()
         self._meta_lbl.clear()
-        self._chunk_nav_lbl.clear()
-        self._prev_chunk_btn.setVisible(False)
-        self._next_chunk_btn.setVisible(False)
-        self._groups = []
+        self._hits = []
         self._result_count_lbl.setText("No results")
         self._show_more_btn.setVisible(False)
         self._empty_lbl.setVisible(True)
@@ -610,37 +556,24 @@ class SearchPanel(QWidget):
         if not q:
             return
         wing = self._wing_edit.text().strip() or None
+        room = self._room_edit.text().strip() or None
         n = self._n_results_spin.value()
-        max_dist = self._threshold_to_distance()
         self._last_query = q
         self._last_wing = wing
+        self._last_room = room
         self._last_n_results = n
-        self._ctrl.request_search(q, wing=wing, n_results=n, max_distance=max_dist)
-
-    def _on_threshold_changed(self, value: int):
-        if value == 0:
-            self._threshold_lbl.setText("any")
-        else:
-            dist = 2.0 - (value / 100.0) * 2.0
-            sim = max(0.0, 1.0 - dist)
-            self._threshold_lbl.setText(f">{sim:.1f}")
-
-    def _threshold_to_distance(self) -> float:
-        v = self._threshold_slider.value()
-        if v == 0:
-            return 0.0
-        return 2.0 - (v / 100.0) * 2.0
+        self._ctrl.request_search(q, wing=wing, room=room, n_results=n)
 
     def _on_show_more(self):
         if not self._last_query:
             return
-        self._last_n_results = min(self._last_n_results + 50, 500)
+        self._last_n_results = min(self._last_n_results + 5, 500)
         self._n_results_spin.setValue(self._last_n_results)
         self._ctrl.request_search(
             self._last_query,
             wing=self._last_wing,
+            room=self._last_room,
             n_results=self._last_n_results,
-            max_distance=self._threshold_to_distance(),
         )
 
     @Slot(object)
@@ -648,13 +581,8 @@ class SearchPanel(QWidget):
         self._results_list.clear()
         self._preview.clear()
         self._preview_header.clear()
-        self._why_matched_lbl.clear()
-        self._excerpt_lbl.clear()
         self._meta_lbl.clear()
-        self._chunk_nav_lbl.clear()
-        self._prev_chunk_btn.setVisible(False)
-        self._next_chunk_btn.setVisible(False)
-        self._groups = []
+        self._hits = []
 
         if not result.ok:
             self._result_count_lbl.setText("Search error")
@@ -667,11 +595,10 @@ class SearchPanel(QWidget):
             self._empty_lbl.setVisible(True)
             return
 
-        self._groups = result.groups
-        total_hits = len(result.hits)
-        file_count = len(self._groups)
+        self._hits = result.hits
+        total = len(self._hits)
 
-        if file_count == 0:
+        if total == 0:
             self._result_count_lbl.setText("No results")
             self._show_more_btn.setVisible(False)
             self._empty_lbl.setText(
@@ -681,35 +608,15 @@ class SearchPanel(QWidget):
             self._empty_lbl.setVisible(True)
             return
 
-        total_str = ""
-        has_more = result.total_candidates and result.total_candidates > total_hits
-        if has_more:
-            total_str = f"  (from {result.total_candidates} candidates)"
-        extra_chunks = total_hits - file_count
-        file_label = f"{file_count} file{'s' if file_count != 1 else ''}"
-        chunk_info = f", {total_hits} chunks" if extra_chunks > 0 else ""
-        self._result_count_lbl.setText(f"{file_label}{chunk_info}{total_str}")
-        self._show_more_btn.setVisible(bool(has_more))
+        self._result_count_lbl.setText(f"{total} result{'s' if total != 1 else ''}")
+        self._show_more_btn.setVisible(False)
         self._empty_lbl.setVisible(False)
 
-        for i, group in enumerate(self._groups):
-            hit = group.best_hit
-            excerpt = group.excerpt(60)
-            loc = group.location_label()
-            sim_str = f"{hit.similarity:.2f}" if hit.similarity is not None else ""
-
-            # Line 1: file + location + similarity
-            line1 = f"[{i + 1}]  {group.source_file}"
-            if loc:
-                line1 += f"  ·  {loc}"
-            if sim_str:
-                line1 += f"  ·  sim {sim_str}"
-
-            # Line 2: query-relevant excerpt (quoted)
-            line2 = f'       "{excerpt}"'
-            if group.hit_count > 1:
-                line2 += f"  [+{len(group.extra_hits)} more]"
-
+        for i, hit in enumerate(self._hits):
+            sim_str = f"{hit.similarity:.3f}" if hit.similarity is not None else ""
+            line1 = f"[{i + 1}]  {hit.wing} / {hit.room}  ·  {hit.source_file}  ·  sim {sim_str}"
+            first_line = hit.text.strip().split("\n")[0][:70]
+            line2 = f"       {first_line}"
             item = QListWidgetItem(f"{line1}\n{line2}")
             item.setData(Qt.UserRole, i)
             self._results_list.addItem(item)
@@ -718,112 +625,19 @@ class SearchPanel(QWidget):
 
     @Slot(int)
     def _on_result_selected(self, row: int):
-        if row < 0 or row >= len(self._groups):
+        if row < 0 or row >= len(self._hits):
             return
-        self._show_group(row, chunk_index=0)
-
-    def _show_group(self, group_row: int, chunk_index: int = 0):
-        if group_row < 0 or group_row >= len(self._groups):
-            return
-        group = self._groups[group_row]
-        hits = group.all_hits
-        if chunk_index < 0 or chunk_index >= len(hits):
-            chunk_index = 0
-        hit = hits[chunk_index]
+        hit = self._hits[row]
         self._preview.setPlainText(hit.text)
-
-        # Preview header — bold file + chunk info
-        header_parts = [group.source_file]
-        if hit.line_start is not None and hit.line_end is not None:
-            if hit.line_start == hit.line_end:
-                header_parts.append(f"Line {hit.line_start}")
-            else:
-                header_parts.append(f"Lines {hit.line_start}–{hit.line_end}")
-        elif hit.chunk_index is not None:
-            header_parts.append(f"Chunk {hit.chunk_index}")
-        if len(hits) > 1:
-            header_parts.append(f"({chunk_index + 1}/{len(hits)} chunks)")
-        self._preview_header.setText("  ·  ".join(header_parts))
-
-        # Why this matched — explanation block
-        why = group.why_matched()
-        if why:
-            self._why_matched_lbl.setText(f"Match: {why}")
-        else:
-            self._why_matched_lbl.clear()
-
-        # Best excerpt — query-relevant quote
-        excerpt = group.excerpt_for_chunk(chunk_index, 90)
-        if excerpt:
-            self._excerpt_lbl.setText(f'"{excerpt}"')
-        else:
-            self._excerpt_lbl.clear()
-
-        # Full chunk text — highlight matching terms
-        self._set_highlighted_preview(hit.text, group.matched_terms())
-
+        header = f"{hit.wing} / {hit.room}  ·  {hit.source_file}"
+        self._preview_header.setText(header)
         meta_parts = [
             f"Wing: {hit.wing}",
             f"Room: {hit.room}",
+            f"Source: {hit.source_file}",
+            f"Similarity: {hit.similarity:.3f}",
         ]
-        if hit.source_path:
-            meta_parts.append(f"Path: {hit.source_path}")
-        if hit.similarity is not None:
-            meta_parts.append(f"Similarity: {hit.similarity:.3f}")
-        if hit.drawer_id:
-            meta_parts.append(f"Drawer: {hit.drawer_id}")
         self._meta_lbl.setText("  |  ".join(meta_parts))
-
-        if len(hits) > 1:
-            chunk_snippet = group.snippet_for_chunk(chunk_index, 50)
-            nav_text = f"Chunk {chunk_index + 1}/{len(hits)}"
-            if chunk_snippet:
-                nav_text += f': "{chunk_snippet}"'
-            self._chunk_nav_lbl.setText(nav_text)
-            self._prev_chunk_btn.setVisible(chunk_index > 0)
-            self._next_chunk_btn.setVisible(chunk_index < len(hits) - 1)
-            self._prev_chunk_btn.setEnabled(chunk_index > 0)
-            self._next_chunk_btn.setEnabled(chunk_index < len(hits) - 1)
-        else:
-            self._chunk_nav_lbl.clear()
-            self._prev_chunk_btn.setVisible(False)
-            self._next_chunk_btn.setVisible(False)
-
-        self._groups[group_row]._active_chunk = chunk_index
-
-    def _set_highlighted_preview(self, text: str, terms: list) -> None:
-        """Show chunk text in preview with query-matching terms highlighted."""
-        if not terms:
-            self._preview.setPlainText(text)
-            return
-        highlighted = text
-        for term in terms:
-            pattern = re.compile(rf"\b({re.escape(term)})\b", re.IGNORECASE)
-            highlighted = pattern.sub(
-                r'<span style="background:#fff3b0;font-weight:bold">\1</span>',
-                highlighted,
-            )
-        self._preview.setHtml(
-            "<pre style='white-space:pre-wrap;font-family:monospace;'>" + highlighted + "</pre>"
-        )
-
-    def _on_prev_chunk(self):
-        row = self._results_list.currentRow()
-        if row < 0 or row >= len(self._groups):
-            return
-        group = self._groups[row]
-        cur = getattr(group, "_active_chunk", 0)
-        if cur > 0:
-            self._show_group(row, cur - 1)
-
-    def _on_next_chunk(self):
-        row = self._results_list.currentRow()
-        if row < 0 or row >= len(self._groups):
-            return
-        group = self._groups[row]
-        cur = getattr(group, "_active_chunk", 0)
-        if cur < len(group.all_hits) - 1:
-            self._show_group(row, cur + 1)
 
     @Slot(bool)
     def _on_busy(self, busy: bool):

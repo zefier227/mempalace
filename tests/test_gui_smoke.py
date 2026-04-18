@@ -22,7 +22,6 @@ PySide6 types via inspect.getsource.  The construction itself is safe.
 from __future__ import annotations
 
 import os
-import sys
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -36,10 +35,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def qapp():
     """Return (or create) a module-scoped QApplication for all smoke tests."""
     from PySide6.QtWidgets import QApplication
+
     app = QApplication.instance() or QApplication([])
     yield app
     # Do NOT call app.quit() -- other test modules may share the process.
@@ -56,6 +57,7 @@ def tmp_palace(tmp_path):
 # ---------------------------------------------------------------------------
 # 1. Import smoke
 # ---------------------------------------------------------------------------
+
 
 class TestImports:
     """All GUI modules must import without errors."""
@@ -77,26 +79,31 @@ class TestImports:
 # 2. QtController instantiation (no palace, no QApplication needed for QObject)
 # ---------------------------------------------------------------------------
 
+
 class TestQtController:
     """QtController must be constructable and expose the right signals."""
 
     def test_instantiate_no_palace(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
+
         ctrl = QtController(palace_path=tmp_palace)
         assert ctrl is not None
 
     def test_palace_path_exposed(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
+
         ctrl = QtController(palace_path=tmp_palace)
         assert ctrl.palace_path == tmp_palace
 
     def test_busy_starts_false(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
+
         ctrl = QtController(palace_path=tmp_palace)
         assert ctrl.busy is False
 
     def test_signals_exist(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
+
         ctrl = QtController(palace_path=tmp_palace)
         for sig_name in (
             "init_finished",
@@ -111,14 +118,15 @@ class TestQtController:
 
     def test_chromadb_version_info(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
+
         ctrl = QtController(palace_path=tmp_palace)
         info = ctrl.chromadb_version_info()
         assert isinstance(info, dict)
-        # adapter returns dict with at least one of these keys
         assert "version" in info or "ok" in info or "safe" in info
 
     def test_palace_exists_utility(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
+
         ctrl = QtController(palace_path=tmp_palace)
         info = ctrl.palace_exists()
         assert isinstance(info, dict)
@@ -126,14 +134,26 @@ class TestQtController:
     def test_request_search_empty_is_noop(self, qapp, tmp_palace):
         """request_search with empty string must not set busy."""
         from gui.qt_controller import QtController
+
         ctrl = QtController(palace_path=tmp_palace)
         ctrl.request_search("")
         assert ctrl.busy is False
+
+    def test_request_search_no_max_distance_param(self, qapp, tmp_palace):
+        """request_search must NOT accept max_distance parameter (raw parity)."""
+        import inspect
+        from gui.qt_controller import QtController
+
+        sig = inspect.signature(QtController.request_search)
+        assert "max_distance" not in sig.parameters, (
+            "request_search must not have max_distance parameter for raw parity"
+        )
 
 
 # ---------------------------------------------------------------------------
 # 3. MainWindow construction (headless, no event loop)
 # ---------------------------------------------------------------------------
+
 
 class TestMainWindow:
     """
@@ -147,6 +167,7 @@ class TestMainWindow:
     def test_window_constructs(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
         from gui.main_window import MainWindow
+
         ctrl = QtController(palace_path=tmp_palace)
         win = MainWindow(controller=ctrl)
         assert win is not None
@@ -154,6 +175,7 @@ class TestMainWindow:
     def test_window_title(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
         from gui.main_window import MainWindow
+
         ctrl = QtController(palace_path=tmp_palace)
         win = MainWindow(controller=ctrl)
         assert "MemPalace" in win.windowTitle()
@@ -162,28 +184,31 @@ class TestMainWindow:
         from gui.qt_controller import QtController
         from gui.main_window import MainWindow
         from PySide6.QtWidgets import QTabWidget
+
         ctrl = QtController(palace_path=tmp_palace)
         win = MainWindow(controller=ctrl)
         tabs = win.findChild(QTabWidget)
         assert tabs is not None
-        assert tabs.count() == 4
+        assert tabs.count() == 5
 
     def test_tab_labels(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
         from gui.main_window import MainWindow
         from PySide6.QtWidgets import QTabWidget
+
         ctrl = QtController(palace_path=tmp_palace)
         win = MainWindow(controller=ctrl)
         tabs = win.findChild(QTabWidget)
         labels = [tabs.tabText(i) for i in range(tabs.count())]
-        assert any("Init" in l for l in labels)
-        assert any("Mine" in l for l in labels)
-        assert any("Status" in l for l in labels)
-        assert any("Search" in l for l in labels)
+        assert any("Init" in lbl for lbl in labels)
+        assert any("Mine" in lbl for lbl in labels)
+        assert any("Status" in lbl for lbl in labels)
+        assert any("Search" in lbl for lbl in labels)
 
     def test_minimum_size(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
         from gui.main_window import MainWindow
+
         ctrl = QtController(palace_path=tmp_palace)
         win = MainWindow(controller=ctrl)
         assert win.minimumWidth() >= 900
@@ -192,6 +217,7 @@ class TestMainWindow:
     def test_status_bar_present(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
         from gui.main_window import MainWindow
+
         ctrl = QtController(palace_path=tmp_palace)
         win = MainWindow(controller=ctrl)
         assert win.statusBar() is not None
@@ -201,36 +227,43 @@ class TestMainWindow:
 # 4. Panel construction in isolation
 # ---------------------------------------------------------------------------
 
+
 class TestPanels:
     """Each panel must instantiate with a valid controller."""
 
     def _make_ctrl(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
+
         return QtController(palace_path=tmp_palace)
 
     def test_init_panel(self, qapp, tmp_palace):
         from gui.main_window import InitPanel
+
         panel = InitPanel(self._make_ctrl(qapp, tmp_palace))
         assert panel is not None
 
     def test_mine_panel(self, qapp, tmp_palace):
         from gui.main_window import MinePanel
+
         panel = MinePanel(self._make_ctrl(qapp, tmp_palace))
         assert panel is not None
 
     def test_status_panel(self, qapp, tmp_palace):
         from gui.main_window import StatusPanel
+
         panel = StatusPanel(self._make_ctrl(qapp, tmp_palace))
         assert panel is not None
 
     def test_search_panel(self, qapp, tmp_palace):
         from gui.main_window import SearchPanel
+
         panel = SearchPanel(self._make_ctrl(qapp, tmp_palace))
         assert panel is not None
 
     def test_mine_panel_has_log(self, qapp, tmp_palace):
         from gui.main_window import MinePanel
         from PySide6.QtWidgets import QTextEdit
+
         panel = MinePanel(self._make_ctrl(qapp, tmp_palace))
         log = panel.findChild(QTextEdit)
         assert log is not None
@@ -239,23 +272,42 @@ class TestPanels:
     def test_search_panel_has_query_field(self, qapp, tmp_palace):
         from gui.main_window import SearchPanel
         from PySide6.QtWidgets import QLineEdit
+
         panel = SearchPanel(self._make_ctrl(qapp, tmp_palace))
         fields = panel.findChildren(QLineEdit)
-        # At least query field + wing filter
-        assert len(fields) >= 2
+        # query + wing + room = 3 fields minimum
+        assert len(fields) >= 3
 
-    def test_search_panel_has_n_results_spinbox(self, qapp, tmp_palace):
+    def test_search_panel_has_room_filter(self, qapp, tmp_palace):
+        from gui.main_window import SearchPanel
+        from PySide6.QtWidgets import QLineEdit
+
+        panel = SearchPanel(self._make_ctrl(qapp, tmp_palace))
+        fields = panel.findChildren(QLineEdit)
+        placeholders = [f.placeholderText() for f in fields]
+        assert any("Optional" in p for p in placeholders)
+
+    def test_search_panel_n_results_default_is_5(self, qapp, tmp_palace):
         from gui.main_window import SearchPanel
         from PySide6.QtWidgets import QSpinBox
+
         panel = SearchPanel(self._make_ctrl(qapp, tmp_palace))
         spinboxes = panel.findChildren(QSpinBox)
         assert len(spinboxes) >= 1
         spin = spinboxes[0]
-        assert spin.value() == 50
-        assert spin.minimum() >= 1
+        assert spin.value() == 5
+
+    def test_search_panel_has_no_threshold_slider(self, qapp, tmp_palace):
+        from gui.main_window import SearchPanel
+        from PySide6.QtWidgets import QSlider
+
+        panel = SearchPanel(self._make_ctrl(qapp, tmp_palace))
+        sliders = panel.findChildren(QSlider)
+        assert len(sliders) == 0
 
     def test_status_panel_has_file_count_label(self, qapp, tmp_palace):
         from gui.main_window import StatusPanel
+
         panel = StatusPanel(self._make_ctrl(qapp, tmp_palace))
         labels = panel.findChildren(type(panel._files_lbl))
         texts = [lbl.text() for lbl in labels]
@@ -264,6 +316,7 @@ class TestPanels:
     def test_window_title_shows_palace_path(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
         from gui.main_window import MainWindow
+
         ctrl = QtController(palace_path=tmp_palace)
         win = MainWindow(controller=ctrl)
         assert tmp_palace in win.windowTitle()
@@ -271,6 +324,7 @@ class TestPanels:
     def test_search_panel_has_show_more_button(self, qapp, tmp_palace):
         from gui.main_window import SearchPanel
         from PySide6.QtWidgets import QPushButton
+
         panel = SearchPanel(self._make_ctrl(qapp, tmp_palace))
         btns = panel.findChildren(QPushButton)
         labels = [b.text() for b in btns]
@@ -279,10 +333,10 @@ class TestPanels:
     def test_mine_done_uses_deferred_status(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
         import inspect
+
         src = inspect.getsource(QtController._on_mine_done)
         assert "QTimer.singleShot" in src, (
-            "Post-mine status refresh must use QTimer.singleShot "
-            "to avoid busy-flag race"
+            "Post-mine status refresh must use QTimer.singleShot to avoid busy-flag race"
         )
 
 
@@ -290,55 +344,63 @@ class TestPanels:
 # 5. CLI arg parsing
 # ---------------------------------------------------------------------------
 
+
 class TestArgParsing:
     """_parse_args must handle all flags without errors."""
 
     def test_no_args(self):
         from gui.app import _parse_args
+
         ns = _parse_args([])
         assert ns.palace is None
         assert ns.debug is False
 
     def test_palace_arg(self, tmp_path):
         from gui.app import _parse_args
+
         ns = _parse_args(["--palace", str(tmp_path)])
         assert ns.palace == str(tmp_path)
 
     def test_debug_flag(self):
         from gui.app import _parse_args
+
         ns = _parse_args(["--debug"])
         assert ns.debug is True
 
     def test_palace_and_debug(self, tmp_path):
         from gui.app import _parse_args
+
         ns = _parse_args(["--palace", str(tmp_path), "--debug"])
         assert ns.palace == str(tmp_path)
         assert ns.debug is True
 
     def test_help_exits(self):
         from gui.app import _parse_args
+
         with pytest.raises(SystemExit) as exc:
             _parse_args(["--help"])
         assert exc.value.code == 0
 
 
 # ---------------------------------------------------------------------------
-# 6. Search selection / preview behavior (SearchPanel)
+# 6. Search selection / preview behavior (SearchPanel — flat hit list)
 # ---------------------------------------------------------------------------
 
 
 class TestSearchSelectionBehavior:
-    """Verify that clicking a result switches the preview to that group."""
+    """Verify that clicking a result shows the verbatim preview."""
 
     def _make_panels(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
         from gui.main_window import SearchPanel
+
         ctrl = QtController(palace_path=tmp_palace)
         panel = SearchPanel(ctrl)
         return ctrl, panel
 
     def _populate_and_search(self, ctrl, panel, tmp_palace, tmp_path):
         from mempalace.gui_adapter import MemPalaceAdapter
+
         proj = tmp_path / "sel_project"
         proj.mkdir()
         (proj / "alpha.txt").write_text(
@@ -350,186 +412,70 @@ class TestSearchSelectionBehavior:
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
         adapter.run_mine_projects(str(proj))
 
-        result = adapter.run_search("architecture", n_results=50)
+        result = adapter.run_search("architecture", n_results=5)
         return result
 
-    def test_search_result_groups_populated(self, qapp, tmp_palace, tmp_path):
-        from mempalace.gui_adapter import SearchResult
-        from gui.main_window import SearchPanel
+    def test_search_result_hits_populated(self, qapp, tmp_palace, tmp_path):
         ctrl, panel = self._make_panels(qapp, tmp_palace)
         result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
         panel._on_search_done(result)
-        assert len(panel._groups) >= 1
+        assert len(panel._hits) >= 1
 
-    def test_click_group_shows_correct_preview(self, qapp, tmp_palace, tmp_path):
-        from mempalace.gui_adapter import SearchResult
+    def test_click_hit_shows_verbatim_preview(self, qapp, tmp_palace, tmp_path):
         ctrl, panel = self._make_panels(qapp, tmp_palace)
         result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
         panel._on_search_done(result)
-        if len(panel._groups) < 2:
-            pytest.skip("Need at least 2 groups for selection test")
+        if len(panel._hits) < 2:
+            pytest.skip("Need at least 2 hits for selection test")
         panel._on_result_selected(0)
         first_preview = panel._preview.toPlainText()
         panel._on_result_selected(1)
         second_preview = panel._preview.toPlainText()
-        assert first_preview != second_preview or len(panel._groups) == 1
-
-    def test_switching_group_resets_chunk_index(self, qapp, tmp_palace, tmp_path):
-        from mempalace.gui_adapter import SearchResult
-        ctrl, panel = self._make_panels(qapp, tmp_palace)
-        result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
-        panel._on_search_done(result)
-        panel._on_result_selected(0)
-        # Even if chunk_index was advanced on group 0, switching to group 1 resets
-        panel._show_group(0, chunk_index=0)
-        if len(panel._groups[0].all_hits) > 1:
-            panel._show_group(0, chunk_index=1)
-        if len(panel._groups) > 1:
-            panel._on_result_selected(1)
-            assert getattr(panel._groups[1], "_active_chunk", 0) == 0
+        assert first_preview != second_preview or len(panel._hits) == 1
 
     def test_new_query_clears_old_preview(self, qapp, tmp_palace, tmp_path):
         from mempalace.gui_adapter import SearchResult
+
         ctrl, panel = self._make_panels(qapp, tmp_palace)
         result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
         panel._on_search_done(result)
-        assert len(panel._groups) >= 1
+        assert len(panel._hits) >= 1
         panel._on_result_selected(0)
         assert panel._preview.toPlainText() != ""
 
-        new_result = SearchResult(ok=True, query="new", hits=[], groups=[])
+        new_result = SearchResult(ok=True, query="new", hits=[])
         panel._on_search_done(new_result)
         assert panel._preview.toPlainText() == ""
         assert panel._preview_header.text() == ""
 
-    def test_preview_header_shows_file_name(self, qapp, tmp_palace, tmp_path):
-        from mempalace.gui_adapter import SearchResult
+    def test_preview_header_shows_wing_room_source(self, qapp, tmp_palace, tmp_path):
         ctrl, panel = self._make_panels(qapp, tmp_palace)
         result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
         panel._on_search_done(result)
-        if not panel._groups:
-            pytest.skip("No groups in result")
+        if not panel._hits:
+            pytest.skip("No hits in result")
         panel._on_result_selected(0)
         header_text = panel._preview_header.text()
-        assert panel._groups[0].source_file in header_text
+        hit = panel._hits[0]
+        assert hit.wing in header_text
+        assert hit.source_file in header_text
 
-    def test_list_items_contain_snippet(self, qapp, tmp_palace, tmp_path):
-        from mempalace.gui_adapter import SearchResult
+    def test_no_chunk_navigation(self, qapp, tmp_palace, tmp_path):
+        """SearchPanel must NOT have chunk navigation (raw parity)."""
+        from gui.main_window import SearchPanel
+
+        panel = SearchPanel(self._make_panels(qapp, tmp_palace)[0])
+        from PySide6.QtWidgets import QPushButton
+
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert not any("chunk" in lbl.lower() for lbl in labels), (
+            "SearchPanel must not have chunk navigation buttons"
+        )
+
+    def test_flat_list_no_grouping(self, qapp, tmp_palace, tmp_path):
+        """Result list must show one entry per hit, not per file."""
         ctrl, panel = self._make_panels(qapp, tmp_palace)
         result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
         panel._on_search_done(result)
-        for i in range(panel._results_list.count()):
-            text = panel._results_list.item(i).text()
-            assert '"' in text  # snippet is quoted in list items
-
-
-# ---------------------------------------------------------------------------
-# 7. Informative snippet logic
-# ---------------------------------------------------------------------------
-
-
-class TestInformativeSnippet:
-    """_informative_snippet should pick content-rich lines."""
-
-    def test_picks_longer_content_line(self):
-        from mempalace.gui_adapter import _informative_snippet
-        text = "# Header\nA substantial line with real content about GraphQL\n\n"
-        result = _informative_snippet(text)
-        assert "substantial" in result or "GraphQL" in result
-
-    def test_short_lines_only(self):
-        from mempalace.gui_adapter import _informative_snippet
-        text = "short line\nanother brief line\n"
-        result = _informative_snippet(text, max_len=40)
-        assert len(result) > 0
-
-    def test_empty_text(self):
-        from mempalace.gui_adapter import _informative_snippet
-        assert _informative_snippet("") == ""
-
-    def test_truncates_long_line(self):
-        from mempalace.gui_adapter import _informative_snippet
-        text = "A" * 200
-        result = _informative_snippet(text, max_len=40)
-        assert len(result) <= 40
-        assert result.endswith("...")
-
-
-# ---------------------------------------------------------------------------
-# 8. Search explanation / why-matched in GUI
-# ---------------------------------------------------------------------------
-
-
-class TestSearchExplanationGUI:
-    """Verify that the SearchPanel shows 'Why this matched' and excerpt."""
-
-    def _make_and_search(self, qapp, tmp_palace, tmp_path):
-        from gui.qt_controller import QtController
-        from gui.main_window import SearchPanel
-        from mempalace.gui_adapter import MemPalaceAdapter
-        ctrl = QtController(palace_path=tmp_palace)
-        panel = SearchPanel(ctrl)
-        proj = tmp_path / "explain_project"
-        proj.mkdir()
-        (proj / "alpha.md").write_text(
-            "We chose GraphQL over REST for the API layer.\n"
-            "The decision was driven by frontend needs.\n"
-        )
-        (proj / "beta.md").write_text(
-            "Redis caching is used for session storage.\n"
-            "PostgreSQL handles the main data workload.\n"
-        )
-        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
-        adapter.run_mine_projects(str(proj))
-        result = adapter.run_search("GraphQL API", n_results=50)
-        panel._on_search_done(result)
-        return ctrl, panel, result
-
-    def test_why_matched_visible_on_selection(self, qapp, tmp_palace, tmp_path):
-        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
-        if not result.groups:
-            pytest.skip("No groups")
-        panel._on_result_selected(0)
-        why_text = panel._why_matched_lbl.text()
-        assert len(why_text) > 0
-
-    def test_excerpt_visible_on_selection(self, qapp, tmp_palace, tmp_path):
-        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
-        if not result.groups:
-            pytest.skip("No groups")
-        panel._on_result_selected(0)
-        excerpt_text = panel._excerpt_lbl.text()
-        assert len(excerpt_text) > 0
-
-    def test_switching_group_updates_why_matched(self, qapp, tmp_palace, tmp_path):
-        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
-        if len(result.groups) < 2:
-            pytest.skip("Need 2+ groups")
-        panel._on_result_selected(0)
-        why_0 = panel._why_matched_lbl.text()
-        panel._on_result_selected(1)
-        why_1 = panel._why_matched_lbl.text()
-        assert why_0 != why_1 or len(result.groups) == 1
-
-    def test_new_query_clears_why_matched(self, qapp, tmp_palace, tmp_path):
-        from mempalace.gui_adapter import SearchResult
-        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
-        if not result.groups:
-            pytest.skip("No groups")
-        panel._on_result_selected(0)
-        assert panel._why_matched_lbl.text() != ""
-        panel._on_search_done(SearchResult(ok=True, query="new", hits=[], groups=[]))
-        assert panel._why_matched_lbl.text() == ""
-
-    def test_chunk_nav_preserves_file_explanation(self, qapp, tmp_palace, tmp_path):
-        ctrl, panel, result = self._make_and_search(qapp, tmp_palace, tmp_path)
-        if not result.groups:
-            pytest.skip("No groups")
-        panel._on_result_selected(0)
-        group = result.groups[0]
-        if group.hit_count < 2:
-            pytest.skip("Need 2+ chunks in group")
-        why_before = panel._why_matched_lbl.text()
-        panel._show_group(0, chunk_index=1)
-        why_after = panel._why_matched_lbl.text()
-        assert why_before == why_after  # file-level explanation stays same
+        assert panel._results_list.count() == len(panel._hits)

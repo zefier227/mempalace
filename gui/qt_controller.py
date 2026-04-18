@@ -61,7 +61,6 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot, QTimer
 from mempalace.gui_adapter import (
     MemPalaceAdapter,
     InitResult,
-    MineProgressEvent,
     MineResult,
     PalaceStatus,
     SearchResult,
@@ -75,6 +74,7 @@ logger = logging.getLogger("mempalace.gui.controller")
 # Worker base
 # ---------------------------------------------------------------------------
 
+
 class _Worker(QThread):
     """Base class: runs one adapter call, then emits a done signal."""
 
@@ -87,11 +87,13 @@ class _Worker(QThread):
 # Concrete workers (one per operation)
 # ---------------------------------------------------------------------------
 
+
 class _InitWorker(_Worker):
     finished = Signal(object)  # InitResult
 
-    def __init__(self, adapter: MemPalaceAdapter, project_dir: Optional[str],
-                 auto_detect: bool, parent=None):
+    def __init__(
+        self, adapter: MemPalaceAdapter, project_dir: Optional[str], auto_detect: bool, parent=None
+    ):
         super().__init__(parent)
         self._adapter = adapter
         self._project_dir = project_dir
@@ -106,11 +108,12 @@ class _InitWorker(_Worker):
 
 
 class _MineWorker(_Worker):
-    progress = Signal(object)   # MineProgressEvent
-    finished = Signal(object)   # MineResult
+    progress = Signal(object)  # MineProgressEvent
+    finished = Signal(object)  # MineResult
 
-    def __init__(self, adapter: MemPalaceAdapter, source_dir: str,
-                 wing: Optional[str], parent=None):
+    def __init__(
+        self, adapter: MemPalaceAdapter, source_dir: str, wing: Optional[str], parent=None
+    ):
         super().__init__(parent)
         self._adapter = adapter
         self._source_dir = source_dir
@@ -126,7 +129,7 @@ class _MineWorker(_Worker):
 
 
 class _StatusWorker(_Worker):
-    finished = Signal(object)   # PalaceStatus
+    finished = Signal(object)  # PalaceStatus
 
     def __init__(self, adapter: MemPalaceAdapter, parent=None):
         super().__init__(parent)
@@ -138,34 +141,48 @@ class _StatusWorker(_Worker):
 
 
 class _SearchWorker(_Worker):
-    finished = Signal(object)   # SearchResult
+    finished = Signal(object)  # SearchResult
 
-    def __init__(self, adapter: MemPalaceAdapter, query: str,
-                 wing: Optional[str], n_results: int,
-                 max_distance: float, parent=None):
+    def __init__(
+        self,
+        adapter: MemPalaceAdapter,
+        query: str,
+        wing: Optional[str],
+        room: Optional[str],
+        n_results: int,
+        parent=None,
+    ):
         super().__init__(parent)
         self._adapter = adapter
         self._query = query
         self._wing = wing
+        self._room = room
         self._n_results = n_results
-        self._max_distance = max_distance
 
     def run(self):
         result = self._adapter.run_search(
             self._query,
             wing=self._wing,
+            room=self._room,
             n_results=self._n_results,
-            max_distance=self._max_distance,
         )
         self.finished.emit(result)
 
 
 class _ContextPackWorker(_Worker):
-    finished = Signal(object)   # ContextPackResult
+    finished = Signal(object)  # ContextPackResult
 
-    def __init__(self, adapter: MemPalaceAdapter, raw_text: str,
-                 title: str, source: str, wing: str, room: str,
-                 use_llm: bool, parent=None):
+    def __init__(
+        self,
+        adapter: MemPalaceAdapter,
+        raw_text: str,
+        title: str,
+        source: str,
+        wing: str,
+        room: str,
+        use_llm: bool,
+        parent=None,
+    ):
         super().__init__(parent)
         self._adapter = adapter
         self._raw_text = raw_text
@@ -191,6 +208,7 @@ class _ContextPackWorker(_Worker):
 # QtController
 # ---------------------------------------------------------------------------
 
+
 class QtController(QObject):
     """
     Qt-side execution boundary for MemPalace GUI v1.
@@ -213,15 +231,15 @@ class QtController(QObject):
     """
 
     # Public signals
-    init_finished   = Signal(object)   # InitResult
-    mine_progress   = Signal(object)   # MineProgressEvent
-    mine_finished   = Signal(object)   # MineResult
-    status_finished = Signal(object)   # PalaceStatus
-    search_finished = Signal(object)   # SearchResult
+    init_finished = Signal(object)  # InitResult
+    mine_progress = Signal(object)  # MineProgressEvent
+    mine_finished = Signal(object)  # MineResult
+    status_finished = Signal(object)  # PalaceStatus
+    search_finished = Signal(object)  # SearchResult
     context_pack_finished = Signal(object)  # ContextPackResult
-    busy_changed    = Signal(bool)
-    error           = Signal(str)
-    palace_switched = Signal(str)      # new palace path
+    busy_changed = Signal(bool)
+    error = Signal(str)
+    palace_switched = Signal(str)  # new palace path
 
     def __init__(self, palace_path: Optional[str] = None, parent=None):
         super().__init__(parent)
@@ -302,8 +320,8 @@ class QtController(QObject):
         self,
         query: str,
         wing: Optional[str] = None,
-        n_results: int = 50,
-        max_distance: float = 1.0,
+        room: Optional[str] = None,
+        n_results: int = 5,
     ) -> None:
         """Run a search (non-blocking). Ignores if busy."""
         if not query.strip():
@@ -312,8 +330,7 @@ class QtController(QObject):
             self.error.emit("Another operation is in progress. Please wait.")
             return
         self._set_busy(True)
-        w = _SearchWorker(self._adapter, query, wing, n_results,
-                          max_distance, parent=self)
+        w = _SearchWorker(self._adapter, query, wing, room, n_results, parent=self)
         w.finished.connect(self._on_search_done)
         w.finished.connect(w.deleteLater)
         self._search_worker = w
@@ -336,8 +353,14 @@ class QtController(QObject):
             return
         self._set_busy(True)
         w = _ContextPackWorker(
-            self._adapter, raw_text, title, source, wing, room,
-            use_llm, parent=self,
+            self._adapter,
+            raw_text,
+            title,
+            source,
+            wing,
+            room,
+            use_llm,
+            parent=self,
         )
         w.finished.connect(self._on_context_pack_done)
         w.finished.connect(w.deleteLater)

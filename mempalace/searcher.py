@@ -286,6 +286,69 @@ def search(query: str, palace_path: str, wing: str = None, room: str = None, n_r
     print()
 
 
+def search_raw(
+    query: str, palace_path: str, wing: str = None, room: str = None, n_results: int = 5
+) -> dict:
+    """Raw search identical to CLI search() but returns structured data.
+
+    This is the parity path: same ChromaDB query, same parameters, same
+    ordering, same raw similarity — no closets, no BM25, no enrichment,
+    no over-fetch, no effective-distance.  The result shape mirrors
+    exactly what CLI search() would print, minus the formatting.
+
+    Returns:
+        dict with keys:
+            query: str
+            filters: {wing, room}
+            results: list of {text, wing, room, source_file, distance, similarity}
+        On error: dict with key "error".
+    """
+    try:
+        col = get_collection(palace_path, create=False)
+    except Exception:
+        return {"error": f"No palace found at {palace_path}"}
+
+    where = build_where_filter(wing, room)
+
+    try:
+        kwargs = {
+            "query_texts": [query],
+            "n_results": n_results,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            kwargs["where"] = where
+
+        results = col.query(**kwargs)
+    except Exception as e:
+        return {"error": f"Search error: {e}"}
+
+    docs = results["documents"][0]
+    metas = results["metadatas"][0]
+    dists = results["distances"][0]
+
+    hits = []
+    for doc, meta, dist in zip(docs, metas, dists):
+        similarity = round(max(0.0, 1 - dist), 3)
+        source = Path(meta.get("source_file", "?")).name
+        hits.append(
+            {
+                "text": doc,
+                "wing": meta.get("wing", "?"),
+                "room": meta.get("room", "?"),
+                "source_file": source,
+                "distance": round(dist, 4),
+                "similarity": similarity,
+            }
+        )
+
+    return {
+        "query": query,
+        "filters": {"wing": wing, "room": room},
+        "results": hits,
+    }
+
+
 def search_memories(
     query: str,
     palace_path: str,

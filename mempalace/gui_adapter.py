@@ -62,7 +62,6 @@ Environment isolation
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
@@ -145,9 +144,7 @@ def _resolve_python() -> str:
                     for py_name in (f"python3.{ver_dir.name}", "python3"):
                         py_bin = ver_dir / "bin" / py_name
                         if py_bin.is_file() and os.access(str(py_bin), os.X_OK):
-                            logger.debug(
-                                "Bundle Python interpreter: %s", py_bin
-                            )
+                            logger.debug("Bundle Python interpreter: %s", py_bin)
                             return str(py_bin)
         macos_python = contents_dir / "MacOS" / "python"
         if macos_python.is_file() and os.access(str(macos_python), os.X_OK):
@@ -170,8 +167,7 @@ def _resolve_python() -> str:
             return candidate
 
     logger.warning(
-        "Could not resolve a suitable Python interpreter; "
-        "falling back to sys.executable=%s",
+        "Could not resolve a suitable Python interpreter; falling back to sys.executable=%s",
         sys.executable,
     )
     return sys.executable
@@ -193,239 +189,29 @@ class AdapterError(Exception):
 
 @dataclass
 class SearchHit:
-    """One result from a semantic search.
+    """One raw search result — mirrors exactly what CLI search() shows.
 
-    Fields added in hardening pass 2.1:
-      source_path   Full absolute path to the source file (stable across renames
-                    of the palace dir).  source_file retains the basename for
-                    display; source_path is for "open in editor" actions.
-      drawer_id     ChromaDB document ID — stable reference for get_drawer calls.
-      chunk_index   Zero-based chunk index within source_file (for pagination UI).
-      closet_preview  First 200 chars of the closet entry that boosted this hit,
-                       or None if this was a pure drawer (non-closet) match.
-      line_start / line_end  1-based line range within the source file where
-                    the chunk text occurs.  None when the file is not readable
-                    or the text cannot be located (binary file, file deleted, etc.).
+    Fields come straight from ChromaDB via search_raw(): no closet boost,
+    no effective-distance, no enrichment, no hybrid re-rank.
     """
+
     text: str
     wing: str
     room: str
     source_file: str
-    source_path: str
     similarity: float
     distance: float
-    matched_via: str = "drawer"
-    drawer_id: str = ""
-    chunk_index: Optional[int] = None
-    closet_preview: Optional[str] = None
-    line_start: Optional[int] = None
-    line_end: Optional[int] = None
 
     @classmethod
-    def from_dict(cls, d: dict, drawer_id: str = "") -> "SearchHit":
+    def from_dict(cls, d: dict) -> "SearchHit":
         return cls(
             text=d.get("text", ""),
             wing=d.get("wing", ""),
             room=d.get("room", ""),
             source_file=d.get("source_file", ""),
-            source_path=d.get("source_path", ""),
             similarity=float(d.get("similarity", 0.0)),
             distance=float(d.get("distance", 1.0)),
-            matched_via=d.get("matched_via", "drawer"),
-            drawer_id=drawer_id or d.get("drawer_id", ""),
-            chunk_index=d.get("chunk_index"),
-            closet_preview=d.get("closet_preview"),
-            line_start=d.get("line_start"),
-            line_end=d.get("line_end"),
         )
-
-
-def _informative_snippet(text: str, max_len: int = 80) -> str:
-    """Pick the most informative line from *text* for a list-item snippet.
-
-    Strategy: prefer lines that are long enough to be distinctive
-    (>= 20 chars) but not so long they're boilerplate headings.
-    Among candidates, pick the one closest to 60 chars — long enough
-    to be unique, short enough to fit a list row.
-    """
-    candidates = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or len(stripped) < 10:
-            continue
-        candidates.append(stripped)
-    if not candidates:
-        return ""
-    # Prefer lines 20–120 chars; among those, pick longest (most content)
-    good = [c for c in candidates if 20 <= len(c) <= 120]
-    if good:
-        best = max(good, key=len)
-    else:
-        best = candidates[0]
-    if len(best) > max_len:
-        best = best[:max_len - 3] + "..."
-    return best
-
-
-def _query_excerpt(text: str, query: str, max_len: int = 80) -> str:
-    """Pick the line from *text* most relevant to *query*.
-
-    Scoring: each query token that appears in a line (case-insensitive)
-    adds +1 to that line's score.  Among lines with score > 0, pick the
-    highest-scoring longest line.  If no line matches any query token,
-    fall back to _informative_snippet().
-    """
-    query_terms = set(_tokenize(query))
-    if not query_terms:
-        return _informative_snippet(text, max_len)
-
-    best_line = ""
-    best_score = 0
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or len(stripped) < 5:
-            continue
-        lower = stripped.lower()
-        score = sum(1 for t in query_terms if t in lower)
-        if score > best_score or (score == best_score and score > 0 and len(stripped) > len(best_line)):
-            best_score = score
-            best_line = stripped
-
-    if best_score == 0:
-        return _informative_snippet(text, max_len)
-
-    if len(best_line) > max_len:
-        # Try to center the excerpt around the first matching term
-        for t in sorted(query_terms, key=lambda x: best_line.lower().find(x)):
-            idx = best_line.lower().find(t)
-            if idx >= 0:
-                start = max(0, idx - 20)
-                end = min(len(best_line), start + max_len - 3)
-                best_line = ("..." if start > 0 else "") + best_line[start:end] + "..."
-                break
-        else:
-            best_line = best_line[:max_len - 3] + "..."
-    return best_line
-
-
-def _tokenize(text: str) -> list:
-    """Lowercase + strip to alphanumeric tokens of length >= 2."""
-    import re as _re
-    return _re.findall(r"\w{2,}", text.lower())
-
-
-@dataclass
-class SearchFileGroup:
-    """Aggregated search result for one source file.
-
-    Groups chunk-level SearchHit entries by source_path so the GUI can
-    display one representative entry per file instead of N near-identical
-    rows for the same file.
-    """
-    source_path: str
-    source_file: str
-    best_hit: SearchHit
-    extra_hits: List[SearchHit] = field(default_factory=list)
-    query: str = ""
-
-    @property
-    def all_hits(self) -> List[SearchHit]:
-        return [self.best_hit] + self.extra_hits
-
-    @property
-    def hit_count(self) -> int:
-        return 1 + len(self.extra_hits)
-
-    def snippet(self, max_len: int = 80) -> str:
-        """Return the most informative line from the best hit's text.
-
-        Prefers longer, content-rich lines over short headings or markers.
-        Falls back to the first non-empty line if no long line is found.
-        """
-        return _informative_snippet(self.best_hit.text, max_len)
-
-    def excerpt(self, max_len: int = 80) -> str:
-        """Return the query-relevant excerpt — the line most related to the query.
-
-        Unlike snippet() which picks the most informative line generically,
-        excerpt() picks the line that best matches the search query terms.
-        Falls back to snippet() if no query-relevant line is found.
-        """
-        if self.query:
-            return _query_excerpt(self.best_hit.text, self.query, max_len)
-        return self.snippet(max_len)
-
-    def excerpt_for_chunk(self, chunk_index: int, max_len: int = 80) -> str:
-        """Return query-relevant excerpt for a specific chunk."""
-        hits = self.all_hits
-        if 0 <= chunk_index < len(hits):
-            if self.query:
-                return _query_excerpt(hits[chunk_index].text, self.query, max_len)
-            return _informative_snippet(hits[chunk_index].text, max_len)
-        return ""
-
-    def snippet_for_chunk(self, chunk_index: int, max_len: int = 80) -> str:
-        """Return snippet for a specific chunk within this group."""
-        hits = self.all_hits
-        if 0 <= chunk_index < len(hits):
-            return _informative_snippet(hits[chunk_index].text, max_len)
-        return ""
-
-    def why_matched(self) -> str:
-        """Human-readable explanation of why this file matched.
-
-        Returns a short string like:
-          'Semantic match: 2 query terms found · sim 0.83 · L10–15'
-        or for weak matches:
-          'Weak semantic match · sim 0.31 · chunk 3'
-        """
-        hit = self.best_hit
-        parts = []
-
-        # Count matching query terms in text
-        if self.query:
-            terms = set(_tokenize(self.query))
-            text_lower = hit.text.lower()
-            found = [t for t in terms if t in text_lower]
-            if found:
-                parts.append(f"{len(found)} query term{'s' if len(found) != 1 else ''} found ({', '.join(found[:4])})")
-            else:
-                parts.append("Semantic match (no exact keywords)")
-
-        # Similarity / strength
-        if hit.similarity is not None:
-            if hit.similarity >= 0.6:
-                parts.append("strong match")
-            elif hit.similarity >= 0.3:
-                parts.append("moderate match")
-            else:
-                parts.append("weak match")
-            parts.append(f"sim {hit.similarity:.2f}")
-
-        # Location
-        loc = self.location_label()
-        if loc:
-            parts.append(loc)
-
-        return " · ".join(parts)
-
-    def matched_terms(self) -> List[str]:
-        """Return query terms that appear in the best hit's text."""
-        if not self.query:
-            return []
-        terms = set(_tokenize(self.query))
-        text_lower = self.best_hit.text.lower()
-        return sorted(t for t in terms if t in text_lower)
-
-    def location_label(self) -> str:
-        hit = self.best_hit
-        if hit.line_start is not None and hit.line_end is not None:
-            if hit.line_start == hit.line_end:
-                return f"L{hit.line_start}"
-            return f"L{hit.line_start}–{hit.line_end}"
-        if hit.chunk_index is not None:
-            return f"chunk {hit.chunk_index}"
-        return ""
 
 
 @dataclass
@@ -433,7 +219,6 @@ class SearchResult:
     ok: bool
     query: str = ""
     hits: List[SearchHit] = field(default_factory=list)
-    groups: List[SearchFileGroup] = field(default_factory=list)
     total_candidates: int = 0
     error: Optional[str] = None
 
@@ -567,6 +352,7 @@ _MINE_ROOM_RE = re.compile(r"^    (.+?)\s{2,}(\d+)\s+files")
 @dataclass
 class MineProgressEvent:
     """Emitted per file during mine, and once at end."""
+
     type: str  # "file" | "done" | "error" | "info"
     # For type="file":
     current: int = 0
@@ -674,6 +460,7 @@ def _invalidate_chroma_client(palace_path: str) -> None:
     """
     try:
         from .palace import _DEFAULT_BACKEND
+
         _DEFAULT_BACKEND._clients.pop(palace_path, None)
         logger.debug("Evicted stale ChromaDB client for %s", palace_path)
     except Exception as e:
@@ -854,45 +641,35 @@ class MemPalaceAdapter:
         wing: Optional[str] = None,
         room: Optional[str] = None,
         n_results: int = 5,
-        max_distance: float = 1.0,
     ) -> SearchResult:
-        """Semantic search against the palace. Returns structured SearchResult.
+        """Raw search — identical behaviour to CLI ``mempalace search``.
 
-        This is a direct Python call — no subprocess, no stdout.
-        Call from a single dedicated thread; do not issue concurrent searches
-        against the same palace (ChromaDB 1.5.x is not concurrent-client safe).
-
-        The palace's Chroma client is always fresh after run_mine_* because
-        _invalidate_chroma_client() is called at the end of every mine.
+        Uses search_raw() (direct ChromaDB query, no closets, no BM25,
+        no enrichment, no over-fetch).  Returns a flat list of SearchHit
+        objects in ChromaDB native order (distance ascending).
 
         Args:
             query: Natural language query.
             wing: Optional wing filter.
             room: Optional room filter.
-            n_results: Max results to return.
-            max_distance: Cosine distance cutoff (0=identical, 2=opposite).
-                          0.0 disables filtering. Practical thresholds:
-                            0.8 — strict (high relevance)
-                            1.0 — balanced (default, similarity > 0)
-                            1.5 — permissive (weak matches included)
+            n_results: Max results to return (default 5, same as CLI).
 
         Returns:
-            SearchResult with ok=True and hits list on success,
+            SearchResult with ok=True and flat hits list on success,
             or ok=False with error string if palace not found.
         """
         try:
-            from .searcher import search_memories
+            from .searcher import search_raw
         except ImportError as e:
             return SearchResult(ok=False, query=query, error=f"Import error: {e}")
 
         try:
-            raw = search_memories(
+            raw = search_raw(
                 query=query,
                 palace_path=self._palace_path,
                 wing=wing,
                 room=room,
                 n_results=n_results,
-                max_distance=max_distance,
             )
         except Exception as e:
             return SearchResult(ok=False, query=query, error=str(e))
@@ -900,151 +677,13 @@ class MemPalaceAdapter:
         if "error" in raw:
             return SearchResult(ok=False, query=query, error=raw["error"])
 
-        # Enrich hits with full source path and drawer_id from a second lookup.
-        # search_memories() strips _source_file_full and _chunk_index from its
-        # output; we re-fetch them via a direct metadata get keyed by source_file.
-        enriched = self._enrich_hits(raw.get("results", []))
-
-        hits = [SearchHit.from_dict(h) for h in enriched]
-        self._compute_line_ranges(hits)
-        groups = self._aggregate_hits(hits, query=query)
+        hits = [SearchHit.from_dict(h) for h in raw.get("results", [])]
         return SearchResult(
             ok=True,
             query=raw.get("query", query),
             hits=hits,
-            groups=groups,
-            total_candidates=raw.get("total_before_filter", len(hits)),
+            total_candidates=len(hits),
         )
-
-    def _enrich_hits(self, results: list) -> list:
-        """Ensure source_path, drawer_id, chunk_index are present in every hit.
-
-        Since searcher.search_memories() now promotes the internal
-        ``_source_file_full``, ``_chunk_index``, and the ChromaDB ``ids``
-        to ``source_path``, ``chunk_index``, and ``drawer_id`` directly, this
-        method is now a simple normalisation pass — it fills in empty defaults
-        for any field that is missing (e.g. when called against an older
-        searcher that hasn't been upgraded yet).
-
-        The former basename-suffix reverse-lookup via collection.get() has been
-        removed because:
-          * It was O(N) round-trips per hit.
-          * Basename matching silently collides when two files in different
-            directories share a filename.
-          * The data is now available without a second round-trip.
-
-        On any failure this degrades gracefully: missing fields remain "".
-        """
-        enriched = []
-        for h in results:
-            h = dict(h)  # shallow copy — don't mutate the caller's dict
-            h.setdefault("source_path", "")
-            h.setdefault("drawer_id", "")
-            h.setdefault("chunk_index", None)
-            enriched.append(h)
-        return enriched
-
-    @staticmethod
-    def _compute_line_ranges(hits: list) -> None:
-        """Populate line_start / line_end on hits where the source file exists.
-
-        For each hit whose source_path points to a readable text file, the
-        method attempts to locate the hit's chunk text within the file and
-        compute a 1-based line range.  If the text cannot be located (binary
-        file, file deleted, modified since mining, etc.) the fields remain
-        None — the caller can fall back to chunk_index for display.
-
-        The match strategy is:
-          1. Take the first distinctive line of the chunk (>= 20 chars, not
-             blank) as an anchor.
-          2. Scan the file for that anchor line.
-          3. From the anchor position, compute the line range by counting
-             the number of lines in the chunk text.
-
-        This is intentionally simple — IDE-level navigation is out of scope.
-        """
-        for hit in hits:
-            if not hit.source_path or hit.line_start is not None:
-                continue
-            try:
-                p = Path(hit.source_path)
-                if not p.is_file():
-                    continue
-                content = p.read_text(errors="replace")
-                if not content:
-                    continue
-                lines = content.splitlines()
-                chunk_lines = hit.text.splitlines()
-
-                anchor = None
-                anchor_offset = 0
-                for i, cl in enumerate(chunk_lines):
-                    stripped = cl.strip()
-                    if len(stripped) >= 20:
-                        anchor = stripped
-                        anchor_offset = i
-                        break
-                if not anchor:
-                    continue
-
-                for fi, fl in enumerate(lines):
-                    if anchor in fl:
-                        start = fi - anchor_offset + 1
-                        start = max(1, start)
-                        end = start + len(chunk_lines) - 1
-                        end = min(end, len(lines))
-                        hit.line_start = start
-                        hit.line_end = end
-                        break
-            except Exception:
-                pass
-
-    @staticmethod
-    def _aggregate_hits(hits: List[SearchHit], query: str = "") -> List[SearchFileGroup]:
-        """Group chunk-level hits by source_path, keeping the best per file.
-
-        The backend returns one SearchHit per chunk (drawer).  When a file
-        has been split into many chunks, those hits appear as near-identical
-        rows in the GUI — same filename, similar text.  This method groups
-        them so the GUI can display one representative entry per file.
-
-        Rules:
-          * Hits are grouped by source_path (empty source_path → one group
-            per hit, no merging).
-          * Within each group, hits are sorted by similarity descending;
-            the first (highest-similarity) hit becomes best_hit.
-          * Groups are returned in the order of the best hit's original
-            position — i.e. if the first 3 raw hits all belong to file A,
-            file A's group is first.
-          * If a file has only one hit, extra_hits is empty.
-          * The *query* string is forwarded to each group so it can
-            compute query-relevant excerpts and match explanations.
-        """
-        if not hits:
-            return []
-
-        by_path: dict = {}
-        order: list = []
-        for hit in hits:
-            key = hit.source_path or f"__no_path__{id(hit)}"
-            if key not in by_path:
-                by_path[key] = []
-                order.append(key)
-            by_path[key].append(hit)
-
-        groups: List[SearchFileGroup] = []
-        for key in order:
-            file_hits = sorted(by_path[key], key=lambda h: h.similarity, reverse=True)
-            best = file_hits[0]
-            extras = file_hits[1:]
-            groups.append(SearchFileGroup(
-                source_path=best.source_path,
-                source_file=best.source_file or "?",
-                best_hit=best,
-                extra_hits=extras,
-                query=query,
-            ))
-        return groups
 
     # ------------------------------------------------------------------
     # run_status — captures stdout, returns structured PalaceStatus
@@ -1060,12 +699,14 @@ class MemPalaceAdapter:
         """
         try:
             import chromadb as _chromadb
+
             chromadb_version = _chromadb.__version__
         except ImportError:
             chromadb_version = "unknown"
 
         try:
             from .palace import get_collection
+
             col = get_collection(self._palace_path, create=False)
         except FileNotFoundError:
             return PalaceStatus(
@@ -1260,11 +901,17 @@ class MemPalaceAdapter:
         """Internal: build CLI command, drain stdout in a background thread,
         enforce wall-clock deadline, invalidate stale Chroma client."""
         cmd = [
-            _resolve_python(), "-m", "mempalace",
-            "--palace", self._palace_path,
-            "mine", source_dir,
-            "--mode", mode,
-            "--agent", agent,
+            _resolve_python(),
+            "-m",
+            "mempalace",
+            "--palace",
+            self._palace_path,
+            "mine",
+            source_dir,
+            "--mode",
+            mode,
+            "--agent",
+            agent,
         ]
         if wing:
             cmd += ["--wing", wing]
@@ -1423,8 +1070,11 @@ class MemPalaceAdapter:
                 )
 
             cmd = [
-                _resolve_python(), "-m", "mempalace.mcp_server",
-                "--palace", self._palace_path,
+                _resolve_python(),
+                "-m",
+                "mempalace.mcp_server",
+                "--palace",
+                self._palace_path,
             ]
             if extra_args:
                 cmd.extend(extra_args)
@@ -1455,15 +1105,17 @@ class MemPalaceAdapter:
             try:
                 import select
 
-                init_req = json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2025-03-26",
-                        "capabilities": {},
-                    },
-                })
+                init_req = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": {},
+                        },
+                    }
+                )
                 self._mcp_proc.stdin.write(init_req + "\n")
                 self._mcp_proc.stdin.flush()
 
@@ -1597,10 +1249,7 @@ class MemPalaceAdapter:
 
     def __repr__(self) -> str:
         mcp_pid = self._mcp_proc.pid if self._mcp_proc and self._mcp_proc.poll() is None else None
-        return (
-            f"MemPalaceAdapter(palace_path={self._palace_path!r}, "
-            f"mcp_pid={mcp_pid})"
-        )
+        return f"MemPalaceAdapter(palace_path={self._palace_path!r}, mcp_pid={mcp_pid})"
 
     # ------------------------------------------------------------------
     # Context Pack — generate derived artifacts from raw text
