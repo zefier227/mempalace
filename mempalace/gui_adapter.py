@@ -352,6 +352,16 @@ class SourceFileResult:
     error: Optional[str] = None
 
 
+@dataclass
+class ExportBlockResult:
+    """Result of building an export block for external chat."""
+
+    ok: bool
+    block_text: str = ""
+    scope: str = ""
+    error: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # MineHandle — cancellable mine operation
 # ---------------------------------------------------------------------------
@@ -1008,6 +1018,205 @@ class MemPalaceAdapter:
             return SourceFileResult(ok=True, text=text, path=str(p.resolve()))
         except Exception as e:
             return SourceFileResult(ok=False, path=source_path, error=str(e))
+
+    # ------------------------------------------------------------------
+    # run_read_wing_drawers — read all drawer text for a wing
+    # ------------------------------------------------------------------
+
+    def run_read_wing_drawers(self, wing: str, max_drawers: int = 200) -> SourceFileResult:
+        """Read all drawer documents for a wing from ChromaDB.
+
+        Returns concatenated text with source_file headers, capped at max_drawers.
+
+        Args:
+            wing: Wing name to filter by.
+            max_drawers: Maximum number of drawers to include.
+
+        Returns:
+            SourceFileResult with concatenated drawer text.
+        """
+        if not wing:
+            return SourceFileResult(ok=False, error="No wing specified")
+        try:
+            from .palace import get_collection
+
+            col = get_collection(self._palace_path, create=False)
+        except Exception as e:
+            return SourceFileResult(ok=False, error=f"No palace: {e}")
+        try:
+            batch = col.get(
+                where={"wing": wing},
+                include=["documents", "metadatas"],
+                limit=max_drawers,
+            )
+            docs = batch.get("documents", []) or []
+            metas = batch.get("metadatas", []) or []
+            if not docs:
+                return SourceFileResult(ok=False, error=f"No drawers found for wing '{wing}'")
+            parts = []
+            for doc, meta in zip(docs, metas):
+                src = Path(meta.get("source_file", "?")).name if meta.get("source_file") else "?"
+                room = meta.get("room", "?")
+                parts.append(f"--- {src} (room: {room}) ---\n{doc}")
+            return SourceFileResult(ok=True, text="\n\n".join(parts), path=f"wing:{wing}")
+        except Exception as e:
+            return SourceFileResult(ok=False, error=str(e))
+
+    # ------------------------------------------------------------------
+    # run_export_block — build export block for external chat
+    # ------------------------------------------------------------------
+
+    def run_export_block(
+        self,
+        scope: str,
+        raw_text: str = "",
+        source_file: str = "",
+        source_path: str = "",
+        wing: str = "",
+        room: str = "",
+        include_recap: bool = True,
+        include_wakeup: bool = True,
+        include_aaak: bool = True,
+        include_raw: bool = True,
+    ) -> ExportBlockResult:
+        """Build an export block for continuing work in an external chat.
+
+        Composes a single block from available data. Uses existing project
+        logic (Dialect.compress, wake-up) — no new AI engine.
+
+        Args:
+            scope: One of "hit", "file", "wing".
+            raw_text: The source text (hit text / file text / wing drawers text).
+            source_file: Source filename for metadata.
+            source_path: Full source path for metadata.
+            wing: Wing name for metadata and wake-up.
+            room: Room name for metadata.
+            include_recap: Include handoff / recap section.
+            include_wakeup: Include wake-up text (wing-level operation).
+            include_aaak: Include AAAK compression of the raw text.
+            include_raw: Include raw source text.
+
+        Returns:
+            ExportBlockResult with composed block_text.
+        """
+        if scope not in ("hit", "file", "wing"):
+            return ExportBlockResult(ok=False, error=f"Invalid scope: {scope}")
+        if not raw_text:
+            return ExportBlockResult(ok=False, error="No source text available")
+
+        scope_labels = {
+            "hit": "selected fragment",
+            "file": "full source file",
+            "wing": f"wing '{wing}'",
+        }
+        scope_label = scope_labels[scope]
+        source_label = source_file or wing or "unknown"
+
+        lines = []
+
+        # Title
+        lines.append(f"# Context for continuing work — {scope_label}")
+        lines.append("")
+
+        # Intro / handoff
+        lines.append("> This block was prepared from MemPalace for continuing")
+        lines.append("> work in a new chat. Original source material is preserved below.")
+        lines.append("")
+
+        # Metadata
+        lines.append("## Source metadata")
+        meta_parts = [f"- **Scope**: {scope}"]
+        if source_file:
+            meta_parts.append(f"- **Source file**: {source_file}")
+        if source_path:
+            meta_parts.append(f"- **Path**: {source_path}")
+        if wing:
+            meta_parts.append(f"- **Wing**: {wing}")
+        if room:
+            meta_parts.append(f"- **Room**: {room}")
+        chars = len(raw_text)
+        toks = max(1, int(chars / 3.8))
+        meta_parts.append(f"- **Size**: ~{toks:,} tokens ({chars:,} chars)")
+        lines.extend(meta_parts)
+        lines.append("")
+
+        # Recap / handoff
+        if include_recap:
+            lines.append("## Handoff")
+            lines.append("")
+            lines.append(
+                "We are continuing work based on previous conversations and files. "
+                "Below is the context needed to pick up where we left off."
+            )
+            lines.append("")
+            lines.append(f"- **What this is**: {scope_label} from '{source_label}'")
+            lines.append(f"- **Wing / topic**: {wing or 'not specified'}")
+            lines.append(f"- **Room**: {room or 'not specified'}")
+            lines.append("- **What already exists**: the raw source below")
+            lines.append("- **What to preserve**: verbatim content, do not summarize or paraphrase")
+            lines.append("")
+
+        # AAAK section
+        if include_aaak:
+            try:
+                from .dialect import Dialect
+
+                dialect = Dialect()
+                meta = {}
+                if source_file:
+                    meta["source_file"] = source_file
+                if wing:
+                    meta["wing"] = wing
+                if room:
+                    meta["room"] = room
+                compressed = dialect.compress(raw_text, metadata=meta if meta else None)
+                stats = dialect.compression_stats(raw_text, compressed)
+                lines.append("## AAAK Index")
+                lines.append("")
+                lines.append(
+                    f"Compressed: {stats['original_tokens_est']}t "
+                    f"→ {stats['summary_tokens_est']}t "
+                    f"({stats['size_ratio']:.1f}x)"
+                )
+                lines.append("")
+                lines.append("```")
+                lines.append(compressed)
+                lines.append("```")
+                lines.append("")
+            except Exception as e:
+                lines.append("## AAAK Index")
+                lines.append("")
+                lines.append(f"(AAAK generation failed: {e})")
+                lines.append("")
+
+        # Wake-up section
+        if include_wakeup and wing:
+            try:
+                wakeup = self.run_wakeup(wing=wing)
+                if wakeup.ok and wakeup.text:
+                    lines.append("## Wake-up")
+                    lines.append("")
+                    lines.append(f"~{wakeup.tokens_est} tokens")
+                    lines.append("")
+                    lines.append("```")
+                    lines.append(wakeup.text)
+                    lines.append("```")
+                    lines.append("")
+            except Exception:
+                pass
+
+        # Raw source
+        if include_raw:
+            lines.append("## Raw source")
+            lines.append("")
+            lines.append(raw_text)
+            lines.append("")
+
+        return ExportBlockResult(
+            ok=True,
+            block_text="\n".join(lines),
+            scope=scope,
+        )
 
     # ------------------------------------------------------------------
     # run_status — captures stdout, returns structured PalaceStatus

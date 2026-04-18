@@ -68,6 +68,7 @@ from mempalace.gui_adapter import (
     CompressResult,
     CompressTextResult,
     SourceFileResult,
+    ExportBlockResult,
     ContextPackResult,
 )
 
@@ -283,6 +284,53 @@ class _ReadSourceFileWorker(_Worker):
         self.finished.emit(result)
 
 
+class _ExportBlockWorker(_Worker):
+    finished = Signal(object)
+
+    def __init__(
+        self,
+        adapter: MemPalaceAdapter,
+        scope: str,
+        raw_text: str,
+        source_file: str,
+        source_path: str,
+        wing: str,
+        room: str,
+        include_recap: bool,
+        include_wakeup: bool,
+        include_aaak: bool,
+        include_raw: bool,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._adapter = adapter
+        self._scope = scope
+        self._raw_text = raw_text
+        self._source_file = source_file
+        self._source_path = source_path
+        self._wing = wing
+        self._room = room
+        self._include_recap = include_recap
+        self._include_wakeup = include_wakeup
+        self._include_aaak = include_aaak
+        self._include_raw = include_raw
+
+    def run(self):
+        result = self._adapter.run_export_block(
+            scope=self._scope,
+            raw_text=self._raw_text,
+            source_file=self._source_file,
+            source_path=self._source_path,
+            wing=self._wing,
+            room=self._room,
+            include_recap=self._include_recap,
+            include_wakeup=self._include_wakeup,
+            include_aaak=self._include_aaak,
+            include_raw=self._include_raw,
+        )
+        self.finished.emit(result)
+
+
 # ---------------------------------------------------------------------------
 # QtController
 # ---------------------------------------------------------------------------
@@ -320,6 +368,7 @@ class QtController(QObject):
     compress_finished = Signal(object)  # CompressResult
     compress_text_finished = Signal(object)  # CompressTextResult
     source_file_finished = Signal(object)  # SourceFileResult
+    export_block_finished = Signal(object)  # ExportBlockResult
     busy_changed = Signal(bool)
     error = Signal(str)
     palace_switched = Signal(str)  # new palace path
@@ -339,6 +388,7 @@ class QtController(QObject):
         self._compress_worker: Optional[_CompressWorker] = None
         self._compress_text_worker: Optional[_CompressTextWorker] = None
         self._read_source_worker: Optional[_ReadSourceFileWorker] = None
+        self._export_block_worker: Optional[_ExportBlockWorker] = None
 
     @property
     def palace_path(self) -> str:
@@ -522,6 +572,43 @@ class QtController(QObject):
         self._read_source_worker = w
         w.start()
 
+    def request_export_block(
+        self,
+        scope: str,
+        raw_text: str = "",
+        source_file: str = "",
+        source_path: str = "",
+        wing: str = "",
+        room: str = "",
+        include_recap: bool = True,
+        include_wakeup: bool = True,
+        include_aaak: bool = True,
+        include_raw: bool = True,
+    ) -> None:
+        """Build export block for external chat (non-blocking). Ignores if busy."""
+        if self._busy:
+            self.error.emit("Another operation is in progress. Please wait.")
+            return
+        self._set_busy(True)
+        w = _ExportBlockWorker(
+            self._adapter,
+            scope,
+            raw_text,
+            source_file,
+            source_path,
+            wing,
+            room,
+            include_recap,
+            include_wakeup,
+            include_aaak,
+            include_raw,
+            parent=self,
+        )
+        w.finished.connect(self._on_export_block_done)
+        w.finished.connect(w.deleteLater)
+        self._export_block_worker = w
+        w.start()
+
     # ------------------------------------------------------------------
     # Internal slots (called from worker threads via Qt queued connection)
     # ------------------------------------------------------------------
@@ -598,6 +685,13 @@ class QtController(QObject):
         if not result.ok:
             self.error.emit(f"Read source failed: {result.error}")
         self.source_file_finished.emit(result)
+
+    @Slot(object)
+    def _on_export_block_done(self, result: ExportBlockResult) -> None:
+        self._set_busy(False)
+        if not result.ok:
+            self.error.emit(f"Export block failed: {result.error}")
+        self.export_block_finished.emit(result)
 
     # ------------------------------------------------------------------
     # Helpers

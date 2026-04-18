@@ -25,7 +25,9 @@ from PySide6.QtCore import Qt, Slot, QSize, QTimer
 from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -60,6 +62,7 @@ from mempalace.gui_adapter import (
     CompressResult,
     CompressTextResult,
     SourceFileResult,
+    ExportBlockResult,
     ContextPackResult,
 )
 
@@ -87,6 +90,206 @@ def _hline() -> QWidget:
     w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     w.setStyleSheet("background: #ddd;")
     return w
+
+
+_PRIMARY_BTN_STYLE = (
+    "QPushButton { background: #2563eb; color: white; font-weight: bold; "
+    "border: none; border-radius: 4px; padding: 6px 16px; }"
+    "QPushButton:hover { background: #1d4ed8; }"
+    "QPushButton:pressed { background: #1e40af; }"
+    "QPushButton:disabled { background: #93c5fd; color: #dbeafe; }"
+)
+
+
+# ---------------------------------------------------------------------------
+# ExportBlockDialog
+# ---------------------------------------------------------------------------
+
+
+class ExportBlockDialog(QDialog):
+    """Dialog for building and exporting a context block for external chat."""
+
+    def __init__(self, controller: QtController, hit: SearchHit, parent=None):
+        super().__init__(parent)
+        self._ctrl = controller
+        self._hit = hit
+        self._scope = "hit"
+        self._raw_text_cache: dict = {}
+        self.setWindowTitle("Prepare context block")
+        self.setMinimumSize(QSize(700, 550))
+        self._build_ui()
+        self._wire_signals()
+        self._preload_scope("hit")
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(20, 20, 20, 20)
+
+        root.addWidget(_label("Prepare context block for external chat", bold=True))
+        root.addWidget(_hline())
+
+        # Scope selection
+        scope_grp = QGroupBox("Scope")
+        scope_lay = QHBoxLayout(scope_grp)
+        self._scope_hit_rb = QCheckBox("Hit (selected fragment)")
+        self._scope_hit_rb.setChecked(True)
+        self._scope_file_rb = QCheckBox("File (full source)")
+        self._scope_wing_rb = QCheckBox(f"Wing ({self._hit.wing})")
+        self._scope_hit_rb.toggled.connect(self._on_scope_hit)
+        self._scope_file_rb.toggled.connect(self._on_scope_file)
+        self._scope_wing_rb.toggled.connect(self._on_scope_wing)
+        scope_lay.addWidget(self._scope_hit_rb)
+        scope_lay.addWidget(self._scope_file_rb)
+        scope_lay.addWidget(self._scope_wing_rb)
+        root.addWidget(scope_grp)
+
+        # Section toggles
+        sec_grp = QGroupBox("Include sections")
+        sec_lay = QHBoxLayout(sec_grp)
+        self._recap_cb = QCheckBox("Handoff / recap")
+        self._recap_cb.setChecked(True)
+        self._wakeup_cb = QCheckBox("Wake-up")
+        self._wakeup_cb.setChecked(True)
+        self._aaak_cb = QCheckBox("AAAK index")
+        self._aaak_cb.setChecked(True)
+        self._raw_cb = QCheckBox("Raw source")
+        self._raw_cb.setChecked(True)
+        sec_lay.addWidget(self._recap_cb)
+        sec_lay.addWidget(self._wakeup_cb)
+        sec_lay.addWidget(self._aaak_cb)
+        sec_lay.addWidget(self._raw_cb)
+        root.addWidget(sec_grp)
+
+        # Generate button
+        self._gen_btn = QPushButton("Generate block")
+        self._gen_btn.setFixedHeight(36)
+        self._gen_btn.setStyleSheet(_PRIMARY_BTN_STYLE)
+        self._gen_btn.clicked.connect(self._generate)
+        root.addWidget(self._gen_btn)
+
+        # Preview
+        self._preview = QTextEdit()
+        self._preview.setReadOnly(True)
+        self._preview.setFont(_MONO)
+        self._preview.setMinimumHeight(200)
+        root.addWidget(self._preview, 1)
+
+        # Action row
+        action_row = QHBoxLayout()
+        self._copy_btn = QPushButton("Copy block")
+        self._copy_btn.setFixedHeight(32)
+        self._copy_btn.setStyleSheet(_PRIMARY_BTN_STYLE)
+        self._copy_btn.setEnabled(False)
+        self._copy_btn.clicked.connect(self._copy_block)
+        action_row.addWidget(self._copy_btn)
+
+        self._save_btn = QPushButton("Save to file")
+        self._save_btn.setFixedHeight(32)
+        self._save_btn.setEnabled(False)
+        self._save_btn.clicked.connect(self._save_block)
+        action_row.addWidget(self._save_btn)
+
+        action_row.addStretch()
+
+        self._close_btn = QPushButton("Close")
+        self._close_btn.setFixedHeight(32)
+        self._close_btn.clicked.connect(self.reject)
+        action_row.addWidget(self._close_btn)
+        root.addLayout(action_row)
+
+    def _wire_signals(self):
+        self._ctrl.export_block_finished.connect(self._on_block_done)
+        self._ctrl.busy_changed.connect(self._on_busy)
+
+    # --- Scope logic ---
+
+    def _on_scope_hit(self, checked):
+        if checked:
+            self._scope_hit_rb.setChecked(True)
+            self._scope_file_rb.setChecked(False)
+            self._scope_wing_rb.setChecked(False)
+            self._scope = "hit"
+            self._preload_scope("hit")
+
+    def _on_scope_file(self, checked):
+        if checked:
+            self._scope_hit_rb.setChecked(False)
+            self._scope_file_rb.setChecked(True)
+            self._scope_wing_rb.setChecked(False)
+            self._scope = "file"
+            self._preload_scope("file")
+
+    def _on_scope_wing(self, checked):
+        if checked:
+            self._scope_hit_rb.setChecked(False)
+            self._scope_file_rb.setChecked(False)
+            self._scope_wing_rb.setChecked(True)
+            self._scope = "wing"
+            self._preload_scope("wing")
+
+    def _preload_scope(self, scope: str):
+        if scope == "hit":
+            self._raw_text_cache["hit"] = self._hit.text
+        elif scope == "file" and self._hit.source_path:
+            result = self._ctrl._adapter.run_read_source_file(self._hit.source_path)
+            self._raw_text_cache["file"] = result.text if result.ok else ""
+        elif scope == "wing" and self._hit.wing:
+            result = self._ctrl._adapter.run_read_wing_drawers(self._hit.wing)
+            self._raw_text_cache["wing"] = result.text if result.ok else ""
+
+    def _get_raw_text(self) -> str:
+        return self._raw_text_cache.get(self._scope, self._hit.text)
+
+    # --- Generate / actions ---
+
+    def _generate(self):
+        raw = self._get_raw_text()
+        if not raw:
+            self._preview.setPlainText("(No source text available for this scope)")
+            return
+        self._ctrl.request_export_block(
+            scope=self._scope,
+            raw_text=raw,
+            source_file=self._hit.source_file,
+            source_path=self._hit.source_path if self._scope == "file" else "",
+            wing=self._hit.wing,
+            room=self._hit.room,
+            include_recap=self._recap_cb.isChecked(),
+            include_wakeup=self._wakeup_cb.isChecked(),
+            include_aaak=self._aaak_cb.isChecked(),
+            include_raw=self._raw_cb.isChecked(),
+        )
+
+    @Slot(object)
+    def _on_block_done(self, result: ExportBlockResult):
+        if not isinstance(result, ExportBlockResult):
+            return
+        if not result.ok:
+            self._preview.setPlainText(f"Error: {result.error}")
+            self._copy_btn.setEnabled(False)
+            self._save_btn.setEnabled(False)
+            return
+        self._preview.setPlainText(result.block_text)
+        self._copy_btn.setEnabled(True)
+        self._save_btn.setEnabled(True)
+
+    def _copy_block(self):
+        QGuiApplication.clipboard().setText(self._preview.toPlainText())
+
+    def _save_block(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save context block",
+            str(Path.home() / "context_block.md"),
+            "Markdown (*.md);;Text (*.txt);;All Files (*)",
+        )
+        if path:
+            Path(path).write_text(self._preview.toPlainText(), encoding="utf-8")
+
+    @Slot(bool)
+    def _on_busy(self, busy: bool):
+        self._gen_btn.setEnabled(not busy)
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +807,18 @@ class SearchPanel(QWidget):
         wing_row.addStretch()
         right_layout.addLayout(wing_row)
 
+        # --- Export: primary action ---
+        export_row = QHBoxLayout()
+        self._export_btn = QPushButton("Prepare context block")
+        self._export_btn.setFixedHeight(34)
+        self._export_btn.setStyleSheet(_PRIMARY_BTN_STYLE)
+        self._export_btn.setEnabled(False)
+        self._export_btn.setToolTip("Build a context block for continuing work in an external chat")
+        self._export_btn.clicked.connect(self._open_export_dialog)
+        export_row.addWidget(self._export_btn)
+        export_row.addStretch()
+        right_layout.addLayout(export_row)
+
         splitter.addWidget(right)
         splitter.setSizes([300, 500])
         root.addWidget(splitter, 1)
@@ -641,6 +856,7 @@ class SearchPanel(QWidget):
             self._compress_file_btn,
             self._open_wing_wakeup_btn,
             self._open_wing_compress_btn,
+            self._export_btn,
         ):
             btn.setEnabled(enabled)
 
@@ -667,6 +883,9 @@ class SearchPanel(QWidget):
         wing_menu = menu.addMenu("Wing")
         wing_menu.addAction("Open wing in Wake-up", self._open_wing_in_wakeup)
         wing_menu.addAction("Open wing in Compress", self._open_wing_in_compress)
+
+        menu.addSeparator()
+        menu.addAction("Prepare context block", self._open_export_dialog)
 
         menu.exec_(self._results_list.viewport().mapToGlobal(pos))
 
@@ -728,6 +947,12 @@ class SearchPanel(QWidget):
         hit = self._current_hit
         if hit:
             self._ctrl.navigate_to_compress.emit(hit.wing)
+
+    def _open_export_dialog(self):
+        hit = self._current_hit
+        if hit:
+            dlg = ExportBlockDialog(self._ctrl, hit, parent=self)
+            dlg.exec_()
 
     # --- Compress-text / source-file result handlers ---
 

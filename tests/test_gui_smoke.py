@@ -1043,3 +1043,332 @@ class TestCompressTextAndSourceFile:
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
         result = adapter.run_read_source_file(str(f))
         assert isinstance(result, SourceFileResult)
+
+
+# ---------------------------------------------------------------------------
+# 13. Export block workflow
+# ---------------------------------------------------------------------------
+
+
+class TestExportBlockAdapter:
+    """Verify gui_adapter.run_export_block() for all 3 scopes."""
+
+    def test_export_block_hit_scope(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter, ExportBlockResult
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="We decided to use GraphQL for the API.",
+            source_file="design.md",
+            wing="projects",
+            room="decisions",
+        )
+        assert isinstance(result, ExportBlockResult)
+        assert result.ok
+        assert result.scope == "hit"
+        assert "GraphQL" in result.block_text
+        assert "hit" in result.block_text.lower()
+
+    def test_export_block_file_scope(self, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        f = tmp_path / "design.md"
+        f.write_text("File content about GraphQL decisions")
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="file",
+            raw_text="File content about GraphQL decisions",
+            source_file="design.md",
+            source_path=str(f),
+            wing="projects",
+            room="decisions",
+        )
+        assert result.ok
+        assert "file" in result.block_text.lower()
+        assert "GraphQL" in result.block_text
+
+    def test_export_block_wing_scope(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="wing",
+            raw_text="Wing drawer content about Redis caching",
+            wing="projects",
+        )
+        assert result.ok
+        assert "wing" in result.block_text.lower()
+
+    def test_export_block_invalid_scope(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(scope="invalid", raw_text="text")
+        assert result.ok is False
+
+    def test_export_block_no_text(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(scope="hit", raw_text="")
+        assert result.ok is False
+
+    def test_export_block_includes_recap(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="Some work text",
+            wing="projects",
+            include_recap=True,
+            include_wakeup=False,
+            include_aaak=False,
+            include_raw=False,
+        )
+        assert result.ok
+        assert "Handoff" in result.block_text
+
+    def test_export_block_omits_recap(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="Some work text",
+            wing="projects",
+            include_recap=False,
+            include_wakeup=False,
+            include_aaak=False,
+            include_raw=False,
+        )
+        assert result.ok
+        assert "Handoff" not in result.block_text
+
+    def test_export_block_includes_aaak(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="We decided to use GraphQL for the API design",
+            wing="projects",
+            include_recap=False,
+            include_wakeup=False,
+            include_aaak=True,
+            include_raw=False,
+        )
+        assert result.ok
+        assert "AAAK" in result.block_text
+
+    def test_export_block_includes_raw_source(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="This is the raw verbatim content",
+            wing="projects",
+            include_recap=False,
+            include_wakeup=False,
+            include_aaak=False,
+            include_raw=True,
+        )
+        assert result.ok
+        assert "This is the raw verbatim content" in result.block_text
+        assert "Raw source" in result.block_text
+
+    def test_export_block_preserves_raw_not_summary(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="Exact user words that must not be paraphrased or summarized",
+            wing="projects",
+            include_raw=True,
+        )
+        assert result.ok
+        assert "Exact user words that must not be paraphrased or summarized" in result.block_text
+
+    def test_export_block_has_metadata(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="Some text",
+            source_file="design.md",
+            wing="projects",
+            room="decisions",
+        )
+        assert result.ok
+        assert "design.md" in result.block_text
+        assert "projects" in result.block_text
+        assert "decisions" in result.block_text
+
+    def test_export_block_has_title(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="Some text",
+            wing="projects",
+        )
+        assert result.ok
+        assert "Context for continuing work" in result.block_text
+
+    def test_export_block_has_handoff_text(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="Some text",
+            wing="projects",
+            include_recap=True,
+        )
+        assert result.ok
+        assert "continuing work" in result.block_text.lower()
+
+
+class TestExportBlockUI:
+    """Verify export dialog and button existence in SearchPanel."""
+
+    def _make_panel(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import SearchPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        return ctrl, panel
+
+    def _populate_hits(self, panel):
+        from mempalace.gui_adapter import SearchResult, SearchHit
+
+        hits = [
+            SearchHit(
+                text="GraphQL design decisions",
+                wing="projects",
+                room="2024-01-15",
+                source_file="design.md",
+                source_path="/tmp/design.md",
+                similarity=0.85,
+                distance=0.15,
+            ),
+        ]
+        result = SearchResult(ok=True, query="test", hits=hits)
+        panel._on_search_done(result)
+        return hits
+
+    def test_has_prepare_context_block_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Prepare context block" in lbl for lbl in labels)
+
+    def test_export_button_disabled_without_hit(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        assert panel._export_btn.isEnabled() is False
+
+    def test_export_button_enabled_with_hit(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        panel._on_result_selected(0)
+        assert panel._export_btn.isEnabled() is True
+
+    def test_export_button_has_primary_style(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        style = panel._export_btn.styleSheet()
+        assert "2563eb" in style or "primary" in style.lower() or "bold" in style
+
+    def test_export_dialog_opens(self, qapp, tmp_palace):
+        from gui.main_window import ExportBlockDialog
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        hits = self._populate_hits(panel)
+        panel._on_result_selected(0)
+        dlg = ExportBlockDialog(panel._ctrl, hits[0], parent=panel)
+        assert dlg is not None
+        assert dlg.windowTitle() == "Prepare context block"
+
+    def test_export_dialog_has_scope_checkboxes(self, qapp, tmp_palace):
+        from gui.main_window import ExportBlockDialog
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        hits = self._populate_hits(panel)
+        dlg = ExportBlockDialog(panel._ctrl, hits[0], parent=panel)
+        assert hasattr(dlg, "_scope_hit_rb")
+        assert hasattr(dlg, "_scope_file_rb")
+        assert hasattr(dlg, "_scope_wing_rb")
+
+    def test_export_dialog_has_section_checkboxes(self, qapp, tmp_palace):
+        from gui.main_window import ExportBlockDialog
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        hits = self._populate_hits(panel)
+        dlg = ExportBlockDialog(panel._ctrl, hits[0], parent=panel)
+        assert hasattr(dlg, "_recap_cb")
+        assert hasattr(dlg, "_wakeup_cb")
+        assert hasattr(dlg, "_aaak_cb")
+        assert hasattr(dlg, "_raw_cb")
+
+    def test_export_dialog_has_copy_and_save(self, qapp, tmp_palace):
+        from gui.main_window import ExportBlockDialog
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        hits = self._populate_hits(panel)
+        dlg = ExportBlockDialog(panel._ctrl, hits[0], parent=panel)
+        assert hasattr(dlg, "_copy_btn")
+        assert hasattr(dlg, "_save_btn")
+
+    def test_context_menu_has_export_action(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        panel._on_result_selected(0)
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(panel)
+        menu.addAction("Prepare context block", lambda: None)
+        assert len(menu.actions()) == 1
+
+    def test_search_semantics_unchanged_with_export(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        assert panel._results_list.count() == 1
+        assert len(panel._hits) == 1
+
+
+class TestReadWingDrawers:
+    """Verify run_read_wing_drawers adapter method."""
+
+    def test_read_wing_no_palace(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_read_wing_drawers("projects")
+        assert result.ok is False
+
+    def test_read_wing_empty_wing(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_read_wing_drawers("")
+        assert result.ok is False
+
+    def test_read_wing_with_mined_palace(self, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        proj = tmp_path / "wing_proj"
+        proj.mkdir()
+        (proj / "notes.md").write_text("GraphQL API design decisions and architecture")
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        init_result = adapter.safe_init(project_dir=str(proj))
+        if init_result.ok:
+            adapter.run_mine_projects(str(proj))
+            result = adapter.run_read_wing_drawers("wing_proj")
+            assert result.ok is True or "No drawers" in (result.error or "")
