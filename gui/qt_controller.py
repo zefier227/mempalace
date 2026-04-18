@@ -64,6 +64,8 @@ from mempalace.gui_adapter import (
     MineResult,
     PalaceStatus,
     SearchResult,
+    WakeUpResult,
+    CompressResult,
     ContextPackResult,
 )
 
@@ -204,6 +206,39 @@ class _ContextPackWorker(_Worker):
         self.finished.emit(result)
 
 
+class _WakeUpWorker(_Worker):
+    finished = Signal(object)
+
+    def __init__(self, adapter: MemPalaceAdapter, wing: Optional[str], parent=None):
+        super().__init__(parent)
+        self._adapter = adapter
+        self._wing = wing
+
+    def run(self):
+        result = self._adapter.run_wakeup(wing=self._wing)
+        self.finished.emit(result)
+
+
+class _CompressWorker(_Worker):
+    finished = Signal(object)
+
+    def __init__(
+        self,
+        adapter: MemPalaceAdapter,
+        wing: Optional[str],
+        dry_run: bool,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._adapter = adapter
+        self._wing = wing
+        self._dry_run = dry_run
+
+    def run(self):
+        result = self._adapter.run_compress(wing=self._wing, dry_run=self._dry_run)
+        self.finished.emit(result)
+
+
 # ---------------------------------------------------------------------------
 # QtController
 # ---------------------------------------------------------------------------
@@ -237,6 +272,8 @@ class QtController(QObject):
     status_finished = Signal(object)  # PalaceStatus
     search_finished = Signal(object)  # SearchResult
     context_pack_finished = Signal(object)  # ContextPackResult
+    wakeup_finished = Signal(object)  # WakeUpResult
+    compress_finished = Signal(object)  # CompressResult
     busy_changed = Signal(bool)
     error = Signal(str)
     palace_switched = Signal(str)  # new palace path
@@ -250,6 +287,8 @@ class QtController(QObject):
         self._status_worker: Optional[_StatusWorker] = None
         self._init_worker: Optional[_InitWorker] = None
         self._cp_worker: Optional[_ContextPackWorker] = None
+        self._wakeup_worker: Optional[_WakeUpWorker] = None
+        self._compress_worker: Optional[_CompressWorker] = None
 
     @property
     def palace_path(self) -> str:
@@ -371,6 +410,34 @@ class QtController(QObject):
         """Save context pack artifacts to palace (synchronous, fast)."""
         return self._adapter.save_context_pack(cp_result)
 
+    def request_wakeup(self, wing: Optional[str] = None) -> None:
+        """Run wake-up (non-blocking). Ignores if busy."""
+        if self._busy:
+            self.error.emit("Another operation is in progress. Please wait.")
+            return
+        self._set_busy(True)
+        w = _WakeUpWorker(self._adapter, wing, parent=self)
+        w.finished.connect(self._on_wakeup_done)
+        w.finished.connect(w.deleteLater)
+        self._wakeup_worker = w
+        w.start()
+
+    def request_compress(
+        self,
+        wing: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> None:
+        """Run compress (non-blocking). Ignores if busy."""
+        if self._busy:
+            self.error.emit("Another operation is in progress. Please wait.")
+            return
+        self._set_busy(True)
+        w = _CompressWorker(self._adapter, wing, dry_run, parent=self)
+        w.finished.connect(self._on_compress_done)
+        w.finished.connect(w.deleteLater)
+        self._compress_worker = w
+        w.start()
+
     # ------------------------------------------------------------------
     # Internal slots (called from worker threads via Qt queued connection)
     # ------------------------------------------------------------------
@@ -419,6 +486,20 @@ class QtController(QObject):
         if not result.ok:
             self.error.emit(f"Context Pack failed: {result.error}")
         self.context_pack_finished.emit(result)
+
+    @Slot(object)
+    def _on_wakeup_done(self, result: WakeUpResult) -> None:
+        self._set_busy(False)
+        if not result.ok:
+            self.error.emit(f"Wake-up failed: {result.error}")
+        self.wakeup_finished.emit(result)
+
+    @Slot(object)
+    def _on_compress_done(self, result: CompressResult) -> None:
+        self._set_busy(False)
+        if not result.ok:
+            self.error.emit(f"Compress failed: {result.error}")
+        self.compress_finished.emit(result)
 
     # ------------------------------------------------------------------
     # Helpers

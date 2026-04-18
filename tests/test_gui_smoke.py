@@ -189,7 +189,7 @@ class TestMainWindow:
         win = MainWindow(controller=ctrl)
         tabs = win.findChild(QTabWidget)
         assert tabs is not None
-        assert tabs.count() == 5
+        assert tabs.count() == 7
 
     def test_tab_labels(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
@@ -204,6 +204,8 @@ class TestMainWindow:
         assert any("Mine" in lbl for lbl in labels)
         assert any("Status" in lbl for lbl in labels)
         assert any("Search" in lbl for lbl in labels)
+        assert any("Wake-up" in lbl for lbl in labels)
+        assert any("Compress" in lbl for lbl in labels)
 
     def test_minimum_size(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
@@ -479,3 +481,141 @@ class TestSearchSelectionBehavior:
         result = self._populate_and_search(ctrl, panel, tmp_palace, tmp_path)
         panel._on_search_done(result)
         assert panel._results_list.count() == len(panel._hits)
+
+
+# ---------------------------------------------------------------------------
+# 7. Wake-up panel smoke tests
+# ---------------------------------------------------------------------------
+
+
+class TestWakeUpPanel:
+    def _make_panel(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import WakeUpPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = WakeUpPanel(ctrl)
+        return ctrl, panel
+
+    def test_panel_constructs(self, qapp, tmp_palace):
+        ctrl, panel = self._make_panel(qapp, tmp_palace)
+        assert panel is not None
+
+    def test_has_wing_edit(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QLineEdit
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        edits = panel.findChildren(QLineEdit)
+        assert len(edits) >= 1
+
+    def test_has_generate_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("wake" in lbl.lower() for lbl in labels)
+
+    def test_has_copy_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("copy" in lbl.lower() for lbl in labels)
+
+    def test_has_output_field(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QTextEdit
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        edits = panel.findChildren(QTextEdit)
+        assert any(e.isReadOnly() for e in edits)
+
+    def test_result_updates_output(self, qapp, tmp_palace):
+        from mempalace.gui_adapter import WakeUpResult
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        result = WakeUpResult(ok=True, text="L0 identity\nL1 story", tokens_est=5)
+        panel._on_wakeup_done(result)
+        assert "L0 identity" in panel._output.toPlainText()
+
+    def test_error_shows_in_output(self, qapp, tmp_palace):
+        from mempalace.gui_adapter import WakeUpResult
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        result = WakeUpResult(ok=False, error="No palace")
+        panel._on_wakeup_done(result)
+        assert "Error:" in panel._output.toPlainText()
+
+
+# ---------------------------------------------------------------------------
+# 8. Compress panel smoke tests
+# ---------------------------------------------------------------------------
+
+
+class TestCompressPanel:
+    def _make_panel(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import CompressPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = CompressPanel(ctrl)
+        return ctrl, panel
+
+    def test_panel_constructs(self, qapp, tmp_palace):
+        ctrl, panel = self._make_panel(qapp, tmp_palace)
+        assert panel is not None
+
+    def test_has_wing_edit(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QLineEdit
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        edits = panel.findChildren(QLineEdit)
+        assert len(edits) >= 1
+
+    def test_has_compress_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("compress" in lbl.lower() for lbl in labels)
+
+    def test_has_dry_run_checkbox(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QCheckBox
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        checkboxes = panel.findChildren(QCheckBox)
+        assert len(checkboxes) >= 1
+
+    def test_has_copy_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("copy" in lbl.lower() for lbl in labels)
+
+    def test_result_updates_output(self, qapp, tmp_palace):
+        from mempalace.gui_adapter import CompressResult
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        result = CompressResult(
+            ok=True,
+            output="Total: 100t -> 10t (10.0x compression)",
+            drawer_count=5,
+            orig_tokens_est=100,
+            comp_tokens_est=10,
+            compression_ratio=10.0,
+            dry_run=True,
+        )
+        panel._on_compress_done(result)
+        assert "Total:" in panel._output.toPlainText()
+
+    def test_error_shows_in_output(self, qapp, tmp_palace):
+        from mempalace.gui_adapter import CompressResult
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        result = CompressResult(ok=False, error="No palace")
+        panel._on_compress_done(result)
+        assert "Error:" in panel._output.toPlainText()

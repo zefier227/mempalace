@@ -298,6 +298,26 @@ class ContextPackResult:
     error: Optional[str] = None
 
 
+@dataclass
+class WakeUpResult:
+    ok: bool
+    text: str = ""
+    tokens_est: int = 0
+    error: Optional[str] = None
+
+
+@dataclass
+class CompressResult:
+    ok: bool
+    output: str = ""
+    drawer_count: int = 0
+    orig_tokens_est: int = 0
+    comp_tokens_est: int = 0
+    compression_ratio: float = 0.0
+    dry_run: bool = False
+    error: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # MineHandle — cancellable mine operation
 # ---------------------------------------------------------------------------
@@ -683,6 +703,193 @@ class MemPalaceAdapter:
             query=raw.get("query", query),
             hits=hits,
             total_candidates=len(hits),
+        )
+
+    # ------------------------------------------------------------------
+    # run_wakeup — direct Python API, mirrors CLI wake-up
+    # ------------------------------------------------------------------
+
+    def run_wakeup(self, wing: Optional[str] = None) -> WakeUpResult:
+        """Wake-up — identical behaviour to CLI ``mempalace wake-up``.
+
+        Calls MemoryStack.wake_up(wing=wing) and returns the raw L0+L1
+        text.  No summarisation, no reformatting.
+
+        Args:
+            wing: Optional wing filter.
+
+        Returns:
+            WakeUpResult with ok=True and raw text on success.
+        """
+        try:
+            from .layers import MemoryStack
+        except ImportError as e:
+            return WakeUpResult(ok=False, error=f"Import error: {e}")
+
+        try:
+            stack = MemoryStack(palace_path=self._palace_path)
+            text = stack.wake_up(wing=wing)
+            tokens_est = len(text) // 4
+            return WakeUpResult(ok=True, text=text, tokens_est=tokens_est)
+        except Exception as e:
+            return WakeUpResult(ok=False, error=str(e))
+
+    # ------------------------------------------------------------------
+    # run_compress — direct Python API, mirrors CLI compress
+    # ------------------------------------------------------------------
+
+    def run_compress(
+        self,
+        wing: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> CompressResult:
+        """Compress — identical behaviour to CLI ``mempalace compress``.
+
+        Runs AAAK Dialect compression on drawers and returns the raw CLI
+        output as a string.  No reformatting, no extra interpretation.
+
+        Args:
+            wing: Optional wing filter (compress only this wing).
+            dry_run: If True, preview without storing.
+
+        Returns:
+            CompressResult with ok=True and raw output on success.
+        """
+        try:
+            from .backends.chroma import ChromaBackend
+            from .dialect import Dialect
+        except ImportError as e:
+            return CompressResult(ok=False, error=f"Import error: {e}")
+
+        try:
+            backend = ChromaBackend()
+            col = backend.get_collection(self._palace_path, "mempalace_drawers")
+        except Exception:
+            return CompressResult(
+                ok=False,
+                error="No palace found. Run Init then Mine first.",
+            )
+
+        config_path = None
+        for candidate in [
+            "entities.json",
+            os.path.join(self._palace_path, "entities.json"),
+        ]:
+            if os.path.exists(candidate):
+                config_path = candidate
+                break
+
+        if config_path and os.path.exists(config_path):
+            dialect = Dialect.from_config(config_path)
+        else:
+            dialect = Dialect()
+
+        where = {"wing": wing} if wing else None
+        _BATCH = 500
+        docs, metas, ids = [], [], []
+        offset = 0
+        while True:
+            try:
+                kwargs = {
+                    "include": ["documents", "metadatas"],
+                    "limit": _BATCH,
+                    "offset": offset,
+                }
+                if where:
+                    kwargs["where"] = where
+                batch = col.get(**kwargs)
+            except Exception:
+                if not docs:
+                    return CompressResult(ok=False, error="Error reading drawers.")
+                break
+            batch_docs = batch.get("documents", [])
+            if not batch_docs:
+                break
+            docs.extend(batch_docs)
+            metas.extend(batch.get("metadatas", []))
+            ids.extend(batch.get("ids", []))
+            offset += len(batch_docs)
+            if len(batch_docs) < _BATCH:
+                break
+
+        if not docs:
+            wing_label = f" in wing '{wing}'" if wing else ""
+            return CompressResult(
+                ok=True,
+                output=f"  No drawers found{wing_label}.",
+                drawer_count=0,
+                dry_run=dry_run,
+            )
+
+        lines = []
+        wing_label = f" in wing '{wing}'" if wing else ""
+        lines.append(f"  Compressing {len(docs)} drawers{wing_label}...")
+        lines.append("")
+
+        total_original = 0
+        total_compressed = 0
+        compressed_entries = []
+
+        for doc, meta, doc_id in zip(docs, metas, ids):
+            compressed = dialect.compress(doc, metadata=meta)
+            stats = dialect.compression_stats(doc, compressed)
+
+            total_original += stats["original_chars"]
+            total_compressed += stats["summary_chars"]
+
+            compressed_entries.append((doc_id, compressed, meta, stats))
+
+            if dry_run:
+                wing_name = meta.get("wing", "?")
+                room_name = meta.get("room", "?")
+                source = Path(meta.get("source_file", "?")).name
+                lines.append(f"  [{wing_name}/{room_name}] {source}")
+                lines.append(
+                    f"    {stats['original_tokens_est']}t -> "
+                    f"{stats['summary_tokens_est']}t "
+                    f"({stats['size_ratio']:.1f}x)"
+                )
+                lines.append(f"    {compressed}")
+                lines.append("")
+
+        if not dry_run:
+            try:
+                comp_col = backend.get_or_create_collection(
+                    self._palace_path, "mempalace_compressed"
+                )
+                for doc_id, compressed, meta, stats in compressed_entries:
+                    comp_meta = dict(meta)
+                    comp_meta["compression_ratio"] = round(stats["size_ratio"], 1)
+                    comp_meta["original_tokens"] = stats["original_tokens_est"]
+                    comp_col.upsert(
+                        ids=[doc_id],
+                        documents=[compressed],
+                        metadatas=[comp_meta],
+                    )
+                lines.append(
+                    f"  Stored {len(compressed_entries)} compressed drawers "
+                    f"in 'mempalace_compressed' collection."
+                )
+            except Exception as e:
+                return CompressResult(ok=False, error=f"Error storing compressed drawers: {e}")
+
+        ratio = total_original / max(total_compressed, 1)
+        orig_tokens = max(1, int(total_original / 3.8))
+        comp_tokens = max(1, int(total_compressed / 3.8))
+        lines.append(f"  Total: {orig_tokens:,}t -> {comp_tokens:,}t ({ratio:.1f}x compression)")
+        if dry_run:
+            lines.append("  (dry run -- nothing stored)")
+
+        _invalidate_chroma_client(self._palace_path)
+
+        return CompressResult(
+            ok=True,
+            output="\n".join(lines),
+            drawer_count=len(docs),
+            orig_tokens_est=orig_tokens,
+            comp_tokens_est=comp_tokens,
+            compression_ratio=round(ratio, 1),
+            dry_run=dry_run,
         )
 
     # ------------------------------------------------------------------

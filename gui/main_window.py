@@ -52,6 +52,8 @@ from mempalace.gui_adapter import (
     PalaceStatus,
     SearchResult,
     SearchHit,
+    WakeUpResult,
+    CompressResult,
     ContextPackResult,
 )
 
@@ -650,6 +652,189 @@ class SearchPanel(QWidget):
 # ---------------------------------------------------------------------------
 
 
+class WakeUpPanel(QWidget):
+    """Wake-up: raw L0+L1 text, mirrors CLI ``mempalace wake-up``."""
+
+    def __init__(self, controller: QtController, parent=None):
+        super().__init__(parent)
+        self._ctrl = controller
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setAlignment(Qt.AlignTop)
+        root.setSpacing(10)
+        root.setContentsMargins(20, 20, 20, 20)
+
+        root.addWidget(_label("Wake-up", bold=True))
+        root.addWidget(_hline())
+
+        desc = QLabel(
+            "L0 (identity) + L1 (essential story) — same as ``mempalace wake-up`` in the terminal."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #666; margin-bottom: 6px;")
+        root.addWidget(desc)
+
+        wing_row = QHBoxLayout()
+        wing_row.addWidget(_label("Wing (optional):"))
+        self._wing_edit = QLineEdit()
+        self._wing_edit.setPlaceholderText("Leave blank for all wings")
+        wing_row.addWidget(self._wing_edit, 1)
+        root.addLayout(wing_row)
+
+        btn_row = QHBoxLayout()
+        self._gen_btn = QPushButton("Generate wake-up")
+        self._gen_btn.setFixedHeight(36)
+        self._gen_btn.clicked.connect(self._do_wakeup)
+        btn_row.addWidget(self._gen_btn)
+        btn_row.addStretch()
+        root.addLayout(btn_row)
+
+        self._output = QTextEdit()
+        self._output.setReadOnly(True)
+        self._output.setFont(_MONO)
+        self._output.setMinimumHeight(200)
+        root.addWidget(self._output)
+
+        meta_row = QHBoxLayout()
+        self._tokens_lbl = _label("")
+        self._tokens_lbl.setStyleSheet("color: #666; font-size: 11px;")
+        meta_row.addWidget(self._tokens_lbl)
+        meta_row.addStretch()
+        self._copy_btn = QPushButton("Copy")
+        self._copy_btn.setFixedHeight(28)
+        self._copy_btn.clicked.connect(self._copy_output)
+        meta_row.addWidget(self._copy_btn)
+        root.addLayout(meta_row)
+
+        root.addStretch()
+
+        self._ctrl.wakeup_finished.connect(self._on_wakeup_done)
+        self._ctrl.busy_changed.connect(self._on_busy)
+
+    def _do_wakeup(self):
+        wing = self._wing_edit.text().strip() or None
+        self._ctrl.request_wakeup(wing=wing)
+
+    @Slot(object)
+    def _on_wakeup_done(self, result: WakeUpResult):
+        if not result.ok:
+            self._output.setPlainText(f"Error: {result.error}")
+            self._tokens_lbl.setText("")
+            return
+        header = f"Wake-up text (~{result.tokens_est} tokens):\n{'=' * 50}\n"
+        self._output.setPlainText(header + result.text)
+        self._tokens_lbl.setText(f"~{result.tokens_est} tokens")
+
+    def _copy_output(self):
+        from PySide6.QtGui import QGuiApplication
+
+        cb = QGuiApplication.clipboard()
+        cb.setText(self._output.toPlainText())
+
+    @Slot(bool)
+    def _on_busy(self, busy: bool):
+        self._gen_btn.setEnabled(not busy)
+
+
+class CompressPanel(QWidget):
+    """Compress: raw AAAK output, mirrors CLI ``mempalace compress``."""
+
+    def __init__(self, controller: QtController, parent=None):
+        super().__init__(parent)
+        self._ctrl = controller
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setAlignment(Qt.AlignTop)
+        root.setSpacing(10)
+        root.setContentsMargins(20, 20, 20, 20)
+
+        root.addWidget(_label("Compress", bold=True))
+        root.addWidget(_hline())
+
+        desc = QLabel("AAAK Dialect compression — same as ``mempalace compress`` in the terminal.")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #666; margin-bottom: 6px;")
+        root.addWidget(desc)
+
+        wing_row = QHBoxLayout()
+        wing_row.addWidget(_label("Wing (optional):"))
+        self._wing_edit = QLineEdit()
+        self._wing_edit.setPlaceholderText("Leave blank for all wings")
+        wing_row.addWidget(self._wing_edit, 1)
+        root.addLayout(wing_row)
+
+        opt_row = QHBoxLayout()
+        self._dry_run_cb = QCheckBox("Dry run (preview only, nothing stored)")
+        opt_row.addWidget(self._dry_run_cb)
+        opt_row.addStretch()
+        root.addLayout(opt_row)
+
+        btn_row = QHBoxLayout()
+        self._gen_btn = QPushButton("Compress")
+        self._gen_btn.setFixedHeight(36)
+        self._gen_btn.clicked.connect(self._do_compress)
+        btn_row.addWidget(self._gen_btn)
+        btn_row.addStretch()
+        root.addLayout(btn_row)
+
+        self._output = QTextEdit()
+        self._output.setReadOnly(True)
+        self._output.setFont(_MONO)
+        self._output.setMinimumHeight(200)
+        root.addWidget(self._output)
+
+        meta_row = QHBoxLayout()
+        self._stats_lbl = _label("")
+        self._stats_lbl.setStyleSheet("color: #666; font-size: 11px;")
+        meta_row.addWidget(self._stats_lbl)
+        meta_row.addStretch()
+        self._copy_btn = QPushButton("Copy")
+        self._copy_btn.setFixedHeight(28)
+        self._copy_btn.clicked.connect(self._copy_output)
+        meta_row.addWidget(self._copy_btn)
+        root.addLayout(meta_row)
+
+        root.addStretch()
+
+        self._ctrl.compress_finished.connect(self._on_compress_done)
+        self._ctrl.busy_changed.connect(self._on_busy)
+
+    def _do_compress(self):
+        wing = self._wing_edit.text().strip() or None
+        dry_run = self._dry_run_cb.isChecked()
+        self._ctrl.request_compress(wing=wing, dry_run=dry_run)
+
+    @Slot(object)
+    def _on_compress_done(self, result: CompressResult):
+        if not result.ok:
+            self._output.setPlainText(f"Error: {result.error}")
+            self._stats_lbl.setText("")
+            return
+        self._output.setPlainText(result.output)
+        if result.drawer_count > 0:
+            self._stats_lbl.setText(
+                f"{result.drawer_count} drawers | "
+                f"{result.orig_tokens_est:,}t → {result.comp_tokens_est:,}t | "
+                f"{result.compression_ratio:.1f}x"
+            )
+        else:
+            self._stats_lbl.setText("")
+
+    def _copy_output(self):
+        from PySide6.QtGui import QGuiApplication
+
+        cb = QGuiApplication.clipboard()
+        cb.setText(self._output.toPlainText())
+
+    @Slot(bool)
+    def _on_busy(self, busy: bool):
+        self._gen_btn.setEnabled(not busy)
+
+
 class ContextPackPanel(QWidget):
     """Generate a Context Pack from raw text or a file."""
 
@@ -924,12 +1109,16 @@ class MainWindow(QMainWindow):
         self._mine_panel = MinePanel(self._ctrl)
         self._status_panel = StatusPanel(self._ctrl)
         self._search_panel = SearchPanel(self._ctrl)
+        self._wakeup_panel = WakeUpPanel(self._ctrl)
+        self._compress_panel = CompressPanel(self._ctrl)
         self._cp_panel = ContextPackPanel(self._ctrl)
 
         self._tabs.addTab(self._init_panel, "Init")
         self._tabs.addTab(self._mine_panel, "Mine")
         self._tabs.addTab(self._status_panel, "Status")
         self._tabs.addTab(self._search_panel, "Search")
+        self._tabs.addTab(self._wakeup_panel, "Wake-up")
+        self._tabs.addTab(self._compress_panel, "Compress")
         self._tabs.addTab(self._cp_panel, "Context Pack")
         layout.addWidget(self._tabs)
 
