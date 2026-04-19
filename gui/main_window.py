@@ -175,6 +175,13 @@ class ExportBlockDialog(QDialog):
 
         action_row.addStretch()
 
+        self._alongside_cb = QCheckBox("Save alongside source")
+        self._alongside_cb.setToolTip("Save the handoff file next to the original source file")
+        self._alongside_cb.setVisible(False)
+        action_row.addWidget(self._alongside_cb)
+
+        action_row.addStretch()
+
         self._close_btn = QPushButton("Close")
         self._close_btn.setFixedHeight(32)
         self._close_btn.clicked.connect(self.reject)
@@ -253,10 +260,27 @@ class ExportBlockDialog(QDialog):
         self._copy_btn.setEnabled(True)
         self._save_btn.setEnabled(True)
 
+    def force_file_scope(self):
+        self._scope_hit_rb.setChecked(False)
+        self._scope_hit_rb.setEnabled(False)
+        self._scope_file_rb.setChecked(True)
+        self._scope_wing_rb.setChecked(False)
+        self._scope_wing_rb.setEnabled(False)
+        self._scope = "file"
+        self._preload_scope("file")
+        if self._hit.source_path:
+            self._alongside_cb.setVisible(True)
+
     def _copy_block(self):
         QGuiApplication.clipboard().setText(self._preview.toPlainText())
 
     def _save_block(self):
+        if self._alongside_cb.isChecked() and self._hit.source_path:
+            src = Path(self._hit.source_path)
+            stem = src.stem
+            out_path = src.parent / f"{stem}_handoff.md"
+            out_path.write_text(self._preview.toPlainText(), encoding="utf-8")
+            return
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save context block",
@@ -735,6 +759,12 @@ class SearchPanel(QWidget):
         action_row.addWidget(self._more_btn)
 
         action_row.addStretch()
+
+        self._from_file_btn = QPushButton("Continue from file...")
+        self._from_file_btn.setFixedHeight(36)
+        self._from_file_btn.setToolTip("Pick a file and prepare a handoff for a new chat")
+        self._from_file_btn.clicked.connect(self._continue_from_file)
+        action_row.addWidget(self._from_file_btn)
         right_layout.addLayout(action_row)
 
         splitter.addWidget(right)
@@ -882,6 +912,32 @@ class SearchPanel(QWidget):
         if hit:
             dlg = ExportBlockDialog(self._ctrl, hit, parent=self)
             dlg.exec_()
+
+    def _continue_from_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select file to prepare handoff from",
+            str(Path.home()),
+            "Text (*.txt *.md *.json *.jsonl);;All Files (*)",
+        )
+        if not path:
+            return
+        result = self._ctrl._adapter.run_read_source_file(path)
+        if not result.ok:
+            QMessageBox.warning(self, "Cannot read file", result.error)
+            return
+        synthetic_hit = SearchHit(
+            text=result.text,
+            wing="",
+            room="",
+            source_file=Path(path).name,
+            source_path=str(Path(path).resolve()),
+            similarity=0.0,
+            distance=0.0,
+        )
+        dlg = ExportBlockDialog(self._ctrl, synthetic_hit, parent=self)
+        dlg.force_file_scope()
+        dlg.exec_()
 
     # --- Compress-text / source-file result handlers ---
 

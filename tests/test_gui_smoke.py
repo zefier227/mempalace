@@ -1188,7 +1188,10 @@ class TestExportBlockAdapter:
             wing="projects",
         )
         assert result.ok
-        assert "must not" in result.block_text.lower() or "must not be broken" in result.block_text.lower()
+        assert (
+            "must not" in result.block_text.lower()
+            or "must not be broken" in result.block_text.lower()
+        )
 
     def test_export_block_has_next_step(self, tmp_palace):
         from mempalace.gui_adapter import MemPalaceAdapter
@@ -1370,3 +1373,323 @@ class TestReadWingDrawers:
             adapter.run_mine_projects(str(proj))
             result = adapter.run_read_wing_drawers("wing_proj")
             assert result.ok is True or "No drawers" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# 14. Continue from file — COMMIT 3
+# ---------------------------------------------------------------------------
+
+
+class TestContinueFromFile:
+    """Verify 'Continue from file...' button and force_file_scope flow."""
+
+    def _make_panel(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import SearchPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        return ctrl, panel
+
+    def test_has_continue_from_file_button(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Continue from file" in lbl for lbl in labels)
+
+    def test_continue_from_file_button_always_enabled(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        assert panel._from_file_btn.isEnabled() is True
+
+    def test_continue_from_file_button_has_tooltip(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        assert panel._from_file_btn.toolTip() != ""
+
+    def test_continue_from_file_creates_synthetic_hit(self, qapp, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import SearchHit
+
+        _, panel = self._make_panel(qapp, tmp_palace)
+        f = tmp_path / "old_chat.md"
+        f.write_text("Previous conversation about GraphQL design")
+        result = panel._ctrl._adapter.run_read_source_file(str(f))
+        assert result.ok
+        synthetic_hit = SearchHit(
+            text=result.text,
+            wing="",
+            room="",
+            source_file=f.name,
+            source_path=str(f.resolve()),
+            similarity=0.0,
+            distance=0.0,
+        )
+        assert synthetic_hit.text == "Previous conversation about GraphQL design"
+        assert synthetic_hit.source_file == "old_chat.md"
+        assert synthetic_hit.wing == ""
+        assert synthetic_hit.room == ""
+
+
+class TestForceFileScope:
+    """Verify ExportBlockDialog.force_file_scope() locks scope to file."""
+
+    def _make_dialog(self, qapp, tmp_palace, tmp_path=None):
+        from gui.qt_controller import QtController
+        from gui.main_window import ExportBlockDialog, SearchPanel
+        from mempalace.gui_adapter import SearchHit
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        source_path = str(tmp_path / "design.md") if tmp_path else "/tmp/design.md"
+        hit = SearchHit(
+            text="Some content",
+            wing="",
+            room="",
+            source_file="design.md",
+            source_path=source_path,
+            similarity=0.0,
+            distance=0.0,
+        )
+        dlg = ExportBlockDialog(ctrl, hit, parent=panel)
+        return panel, dlg
+
+    def test_force_file_scope_selects_file(self, qapp, tmp_palace):
+        _panel, dlg = self._make_dialog(qapp, tmp_palace)
+        dlg.force_file_scope()
+        assert dlg._scope_file_rb.isChecked() is True
+        assert dlg._scope == "file"
+
+    def test_force_file_scope_disables_hit(self, qapp, tmp_palace):
+        _panel, dlg = self._make_dialog(qapp, tmp_palace)
+        dlg.force_file_scope()
+        assert dlg._scope_hit_rb.isEnabled() is False
+
+    def test_force_file_scope_disables_wing(self, qapp, tmp_palace):
+        _panel, dlg = self._make_dialog(qapp, tmp_palace)
+        dlg.force_file_scope()
+        assert dlg._scope_wing_rb.isEnabled() is False
+
+    def test_force_file_scope_unchecks_hit(self, qapp, tmp_palace):
+        _panel, dlg = self._make_dialog(qapp, tmp_palace)
+        dlg.force_file_scope()
+        assert dlg._scope_hit_rb.isChecked() is False
+
+    def test_force_file_scope_unchecks_wing(self, qapp, tmp_palace):
+        _panel, dlg = self._make_dialog(qapp, tmp_palace)
+        dlg.force_file_scope()
+        assert dlg._scope_wing_rb.isChecked() is False
+
+    def test_force_file_scope_preloads_file_text(self, qapp, tmp_palace, tmp_path):
+        f = tmp_path / "design.md"
+        f.write_text("Design file content")
+        _panel, dlg = self._make_dialog(qapp, tmp_palace, tmp_path)
+        dlg.force_file_scope()
+        assert "Design file content" in dlg._raw_text_cache.get("file", "")
+
+    def test_force_file_scope_shows_alongside_checkbox(self, qapp, tmp_palace, tmp_path):
+        f = tmp_path / "design.md"
+        f.write_text("content")
+        _panel, dlg = self._make_dialog(qapp, tmp_palace, tmp_path)
+        dlg.force_file_scope()
+        assert dlg._alongside_cb.isHidden() is False
+
+    def test_alongside_checkbox_hidden_without_source_path(self, qapp, tmp_palace):
+        from gui.qt_controller import QtController
+        from gui.main_window import ExportBlockDialog, SearchPanel
+        from mempalace.gui_adapter import SearchHit
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        hit = SearchHit(
+            text="Content",
+            wing="",
+            room="",
+            source_file="design.md",
+            source_path="",
+            similarity=0.0,
+            distance=0.0,
+        )
+        dlg = ExportBlockDialog(ctrl, hit, parent=panel)
+        dlg.force_file_scope()
+        assert dlg._alongside_cb.isVisible() is False
+
+
+class TestSaveAlongsideSource:
+    """Verify 'Save alongside source' writes file next to original."""
+
+    def test_save_alongside_creates_file(self, qapp, tmp_palace, tmp_path):
+        from gui.qt_controller import QtController
+        from gui.main_window import ExportBlockDialog, SearchPanel
+        from mempalace.gui_adapter import SearchHit
+
+        src = tmp_path / "old_chat.md"
+        src.write_text("Old conversation content about design decisions")
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        hit = SearchHit(
+            text=src.read_text(),
+            wing="",
+            room="",
+            source_file=src.name,
+            source_path=str(src.resolve()),
+            similarity=0.0,
+            distance=0.0,
+        )
+        dlg = ExportBlockDialog(ctrl, hit, parent=panel)
+        dlg.force_file_scope()
+        dlg._preview.setPlainText("Handoff block content")
+        dlg._alongside_cb.setChecked(True)
+        dlg._save_block()
+        out = tmp_path / "old_chat_handoff.md"
+        assert out.exists()
+        assert out.read_text() == "Handoff block content"
+
+    def test_save_alongside_preserves_original(self, qapp, tmp_palace, tmp_path):
+        from gui.qt_controller import QtController
+        from gui.main_window import ExportBlockDialog, SearchPanel
+        from mempalace.gui_adapter import SearchHit
+
+        src = tmp_path / "notes.md"
+        src.write_text("Original notes content")
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        hit = SearchHit(
+            text=src.read_text(),
+            wing="",
+            room="",
+            source_file=src.name,
+            source_path=str(src.resolve()),
+            similarity=0.0,
+            distance=0.0,
+        )
+        dlg = ExportBlockDialog(ctrl, hit, parent=panel)
+        dlg.force_file_scope()
+        dlg._preview.setPlainText("Handoff content")
+        dlg._alongside_cb.setChecked(True)
+        dlg._save_block()
+        assert src.read_text() == "Original notes content"
+
+    def test_save_alongside_naming_convention(self, qapp, tmp_palace, tmp_path):
+        from gui.qt_controller import QtController
+        from gui.main_window import ExportBlockDialog, SearchPanel
+        from mempalace.gui_adapter import SearchHit
+
+        src = tmp_path / "design.md"
+        src.write_text("Design content")
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        hit = SearchHit(
+            text=src.read_text(),
+            wing="",
+            room="",
+            source_file=src.name,
+            source_path=str(src.resolve()),
+            similarity=0.0,
+            distance=0.0,
+        )
+        dlg = ExportBlockDialog(ctrl, hit, parent=panel)
+        dlg.force_file_scope()
+        dlg._preview.setPlainText("Content")
+        dlg._alongside_cb.setChecked(True)
+        dlg._save_block()
+        expected = tmp_path / "design_handoff.md"
+        assert expected.exists()
+
+
+class TestContinueFromFileIntegration:
+    """Integration: continue-from-file + canonical handoff + UI simplification."""
+
+    def test_synthetic_hit_produces_file_scope_handoff(self, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import MemPalaceAdapter, SearchHit
+
+        f = tmp_path / "old.md"
+        f.write_text("Old chat about architecture decisions")
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        read_result = adapter.run_read_source_file(str(f))
+        assert read_result.ok
+        synthetic_hit = SearchHit(
+            text=read_result.text,
+            wing="",
+            room="",
+            source_file=f.name,
+            source_path=str(f.resolve()),
+            similarity=0.0,
+            distance=0.0,
+        )
+        result = adapter.run_export_block(
+            scope="file",
+            raw_text=synthetic_hit.text,
+            source_file=synthetic_hit.source_file,
+            source_path=synthetic_hit.source_path,
+            wing=synthetic_hit.wing,
+            room=synthetic_hit.room,
+        )
+        assert result.ok
+        assert result.scope == "file"
+        assert "Technical handoff" in result.block_text
+        assert "old.md" in result.block_text
+
+    def test_large_file_handoff_truncates(self, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        f = tmp_path / "big_chat.md"
+        f.write_text("Line of text.\n" * 2000)
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        raw = f.read_text()
+        result = adapter.run_export_block(
+            scope="file",
+            raw_text=raw,
+            source_file="big_chat.md",
+            source_path=str(f.resolve()),
+        )
+        assert result.ok
+        assert "lines omitted" in result.block_text
+
+    def test_small_file_handoff_includes_full_source(self, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        f = tmp_path / "small_chat.md"
+        f.write_text("Short conversation about testing")
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        raw = f.read_text()
+        result = adapter.run_export_block(
+            scope="file",
+            raw_text=raw,
+            source_file="small_chat.md",
+            source_path=str(f.resolve()),
+        )
+        assert result.ok
+        assert "Short conversation about testing" in result.block_text
+        assert "lines omitted" not in result.block_text
+
+    def test_primary_button_still_works_with_continue_from_file(self, qapp, tmp_palace):
+        from PySide6.QtWidgets import QPushButton
+
+        from gui.qt_controller import QtController
+        from gui.main_window import SearchPanel
+
+        ctrl = QtController(palace_path=tmp_palace)
+        panel = SearchPanel(ctrl)
+        btns = panel.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert any("Prepare for new chat" in lbl for lbl in labels)
+        assert any("Continue from file" in lbl for lbl in labels)
+        assert any("More actions" in lbl for lbl in labels)
+
+    def test_existing_search_wakeup_compress_unchanged(self, tmp_palace, tmp_path):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        proj = tmp_path / "integ_proj"
+        proj.mkdir()
+        (proj / "alpha.txt").write_text(
+            "Alpha: GraphQL API design decisions and architecture overview."
+        )
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        adapter.safe_init(project_dir=str(proj))
+        adapter.run_mine_projects(str(proj))
+        search_result = adapter.run_search("architecture", n_results=5)
+        assert search_result.ok
+        wakeup_result = adapter.run_wakeup()
+        assert wakeup_result.ok or "No palace" in (wakeup_result.error or "")
+        compress_result = adapter.run_compress(dry_run=True)
+        assert compress_result.ok or "No drawers" in (compress_result.error or "")
