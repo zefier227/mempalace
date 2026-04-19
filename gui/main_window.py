@@ -115,7 +115,7 @@ class ExportBlockDialog(QDialog):
         self._hit = hit
         self._scope = "hit"
         self._raw_text_cache: dict = {}
-        self.setWindowTitle("Prepare context block")
+        self.setWindowTitle("Prepare for new chat")
         self.setMinimumSize(QSize(700, 550))
         self._build_ui()
         self._wire_signals()
@@ -636,10 +636,9 @@ class SearchPanel(QWidget):
     Mirrors CLI ``mempalace search`` behaviour exactly:
     flat hit list, raw similarity, verbatim drawer text in preview.
 
-    Usability actions on each hit:
-    - Copy text / Copy source / Copy wing-room path (clipboard)
-    - Send to Wake-up (prefill wing, switch tab)
-    - Send to Compress (prefill wing, switch tab)
+    Primary action: "Prepare for new chat" — export context block.
+    Secondary actions: Copy, Compress, Open file, Navigate — via
+    "More actions..." button or right-click context menu.
     """
 
     def __init__(self, controller: QtController, parent=None):
@@ -739,85 +738,25 @@ class SearchPanel(QWidget):
         self._meta_lbl.setStyleSheet("color: #666; font-size: 11px;")
         right_layout.addWidget(self._meta_lbl)
 
-        # --- Hit-level actions ---
-        hit_row = QHBoxLayout()
-        self._copy_text_btn = QPushButton("Copy text")
-        self._copy_text_btn.setFixedHeight(28)
-        self._copy_text_btn.setEnabled(False)
-        self._copy_text_btn.setToolTip("Copy the selected hit's verbatim text to clipboard")
-        self._copy_text_btn.clicked.connect(self._copy_hit_text)
-        hit_row.addWidget(self._copy_text_btn)
-
-        self._compress_hit_btn = QPushButton("Compress to AAAK")
-        self._compress_hit_btn.setFixedHeight(28)
-        self._compress_hit_btn.setEnabled(False)
-        self._compress_hit_btn.setToolTip("AAAK-compress the selected hit's text (does not store)")
-        self._compress_hit_btn.clicked.connect(self._compress_hit_text)
-        hit_row.addWidget(self._compress_hit_btn)
-
-        hit_row.addStretch()
-        right_layout.addLayout(hit_row)
-
-        # --- File-level actions ---
-        file_row = QHBoxLayout()
-        self._copy_file_btn = QPushButton("Copy source file")
-        self._copy_file_btn.setFixedHeight(28)
-        self._copy_file_btn.setEnabled(False)
-        self._copy_file_btn.setToolTip("Copy the full source file content to clipboard")
-        self._copy_file_btn.clicked.connect(self._copy_source_file)
-        file_row.addWidget(self._copy_file_btn)
-
-        self._open_file_btn = QPushButton("Open source file")
-        self._open_file_btn.setFixedHeight(28)
-        self._open_file_btn.setEnabled(False)
-        self._open_file_btn.setToolTip("Load the full source file into the preview pane")
-        self._open_file_btn.clicked.connect(self._open_source_file)
-        file_row.addWidget(self._open_file_btn)
-
-        self._compress_file_btn = QPushButton("Compress file")
-        self._compress_file_btn.setFixedHeight(28)
-        self._compress_file_btn.setEnabled(False)
-        self._compress_file_btn.setToolTip("AAAK-compress the full source file (does not store)")
-        self._compress_file_btn.clicked.connect(self._compress_source_file)
-        file_row.addWidget(self._compress_file_btn)
-
-        file_row.addStretch()
-        right_layout.addLayout(file_row)
-
-        # --- Wing-level actions ---
-        wing_row = QHBoxLayout()
-        self._open_wing_wakeup_btn = QPushButton("Open wing in Wake-up")
-        self._open_wing_wakeup_btn.setFixedHeight(28)
-        self._open_wing_wakeup_btn.setEnabled(False)
-        self._open_wing_wakeup_btn.setToolTip(
-            "Switch to Wake-up tab with this hit's wing prefilled"
-        )
-        self._open_wing_wakeup_btn.clicked.connect(self._open_wing_in_wakeup)
-        wing_row.addWidget(self._open_wing_wakeup_btn)
-
-        self._open_wing_compress_btn = QPushButton("Open wing in Compress")
-        self._open_wing_compress_btn.setFixedHeight(28)
-        self._open_wing_compress_btn.setEnabled(False)
-        self._open_wing_compress_btn.setToolTip(
-            "Switch to Compress tab with this hit's wing prefilled"
-        )
-        self._open_wing_compress_btn.clicked.connect(self._open_wing_in_compress)
-        wing_row.addWidget(self._open_wing_compress_btn)
-
-        wing_row.addStretch()
-        right_layout.addLayout(wing_row)
-
-        # --- Export: primary action ---
-        export_row = QHBoxLayout()
-        self._export_btn = QPushButton("Prepare context block")
-        self._export_btn.setFixedHeight(34)
+        # --- Primary action row ---
+        action_row = QHBoxLayout()
+        self._export_btn = QPushButton("Prepare for new chat")
+        self._export_btn.setFixedHeight(36)
         self._export_btn.setStyleSheet(_PRIMARY_BTN_STYLE)
         self._export_btn.setEnabled(False)
         self._export_btn.setToolTip("Build a context block for continuing work in an external chat")
         self._export_btn.clicked.connect(self._open_export_dialog)
-        export_row.addWidget(self._export_btn)
-        export_row.addStretch()
-        right_layout.addLayout(export_row)
+        action_row.addWidget(self._export_btn)
+
+        self._more_btn = QPushButton("More actions...")
+        self._more_btn.setFixedHeight(36)
+        self._more_btn.setEnabled(False)
+        self._more_btn.setToolTip("Copy, compress, open file, navigate to other tabs")
+        self._more_btn.clicked.connect(self._show_more_actions)
+        action_row.addWidget(self._more_btn)
+
+        action_row.addStretch()
+        right_layout.addLayout(action_row)
 
         splitter.addWidget(right)
         splitter.setSizes([300, 500])
@@ -848,30 +787,19 @@ class SearchPanel(QWidget):
         return None
 
     def _set_action_buttons_enabled(self, enabled: bool):
-        for btn in (
-            self._copy_text_btn,
-            self._compress_hit_btn,
-            self._copy_file_btn,
-            self._open_file_btn,
-            self._compress_file_btn,
-            self._open_wing_wakeup_btn,
-            self._open_wing_compress_btn,
-            self._export_btn,
-        ):
-            btn.setEnabled(enabled)
+        self._export_btn.setEnabled(enabled)
+        self._more_btn.setEnabled(enabled)
 
-    def _on_context_menu(self, pos):
+    def _show_more_actions(self):
         hit = self._current_hit
         if hit is None:
             return
         menu = QMenu(self)
 
-        # Hit-level
         hit_menu = menu.addMenu("Hit")
         hit_menu.addAction("Copy text", self._copy_hit_text)
         hit_menu.addAction("Compress to AAAK", self._compress_hit_text)
 
-        # File-level
         file_menu = menu.addMenu("File")
         file_menu.addAction("Copy source file", self._copy_source_file)
         file_menu.addAction("Open source file", self._open_source_file)
@@ -879,13 +807,35 @@ class SearchPanel(QWidget):
 
         menu.addSeparator()
 
-        # Wing-level
         wing_menu = menu.addMenu("Wing")
         wing_menu.addAction("Open wing in Wake-up", self._open_wing_in_wakeup)
         wing_menu.addAction("Open wing in Compress", self._open_wing_in_compress)
 
+        menu.exec_(self._more_btn.mapToGlobal(self._more_btn.rect().bottomLeft()))
+
+    def _on_context_menu(self, pos):
+        hit = self._current_hit
+        if hit is None:
+            return
+        menu = QMenu(self)
+
+        menu.addAction("Prepare for new chat", self._open_export_dialog)
         menu.addSeparator()
-        menu.addAction("Prepare context block", self._open_export_dialog)
+
+        hit_menu = menu.addMenu("Hit")
+        hit_menu.addAction("Copy text", self._copy_hit_text)
+        hit_menu.addAction("Compress to AAAK", self._compress_hit_text)
+
+        file_menu = menu.addMenu("File")
+        file_menu.addAction("Copy source file", self._copy_source_file)
+        file_menu.addAction("Open source file", self._open_source_file)
+        file_menu.addAction("Compress source file", self._compress_source_file)
+
+        menu.addSeparator()
+
+        wing_menu = menu.addMenu("Wing")
+        wing_menu.addAction("Open wing in Wake-up", self._open_wing_in_wakeup)
+        wing_menu.addAction("Open wing in Compress", self._open_wing_in_compress)
 
         menu.exec_(self._results_list.viewport().mapToGlobal(pos))
 

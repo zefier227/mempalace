@@ -627,7 +627,7 @@ class TestCompressPanel:
 
 
 class TestSearchUsabilityActions:
-    """Verify context menu, copy actions, and navigation from SearchPanel — 3 scope levels."""
+    """Verify primary action, More actions menu, and context menu on SearchPanel."""
 
     def _make_panel(self, qapp, tmp_palace):
         from gui.qt_controller import QtController
@@ -665,99 +665,68 @@ class TestSearchUsabilityActions:
         panel._on_search_done(result)
         return hits
 
-    # -- Hit-level button existence --
+    # -- Primary button --
 
-    def test_has_copy_text_button(self, qapp, tmp_palace):
+    def test_has_primary_action_button(self, qapp, tmp_palace):
         from PySide6.QtWidgets import QPushButton
 
         _, panel = self._make_panel(qapp, tmp_palace)
         btns = panel.findChildren(QPushButton)
         labels = [b.text() for b in btns]
-        assert any("Copy text" in lbl for lbl in labels)
+        assert any("Prepare for new chat" in lbl for lbl in labels)
 
-    def test_has_compress_to_aaak_button(self, qapp, tmp_palace):
+    def test_has_more_actions_button(self, qapp, tmp_palace):
         from PySide6.QtWidgets import QPushButton
 
         _, panel = self._make_panel(qapp, tmp_palace)
         btns = panel.findChildren(QPushButton)
         labels = [b.text() for b in btns]
-        assert any("Compress to AAAK" in lbl for lbl in labels)
+        assert any("More actions" in lbl for lbl in labels)
 
-    # -- File-level button existence --
+    def test_primary_button_has_blue_style(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        style = panel._export_btn.styleSheet()
+        assert "2563eb" in style
 
-    def test_has_copy_source_file_button(self, qapp, tmp_palace):
+    # -- Secondary actions are NOT visible as standalone buttons --
+
+    def test_no_standalone_copy_text_button(self, qapp, tmp_palace):
         from PySide6.QtWidgets import QPushButton
 
         _, panel = self._make_panel(qapp, tmp_palace)
         btns = panel.findChildren(QPushButton)
-        labels = [b.text() for b in btns]
-        assert any("Copy source file" in lbl for lbl in labels)
-
-    def test_has_open_source_file_button(self, qapp, tmp_palace):
-        from PySide6.QtWidgets import QPushButton
-
-        _, panel = self._make_panel(qapp, tmp_palace)
-        btns = panel.findChildren(QPushButton)
-        labels = [b.text() for b in btns]
-        assert any("Open source file" in lbl for lbl in labels)
-
-    def test_has_compress_file_button(self, qapp, tmp_palace):
-        from PySide6.QtWidgets import QPushButton
-
-        _, panel = self._make_panel(qapp, tmp_palace)
-        btns = panel.findChildren(QPushButton)
-        labels = [b.text() for b in btns]
-        assert any("Compress file" in lbl for lbl in labels)
-
-    # -- Wing-level button existence --
-
-    def test_has_open_wing_in_wakeup_button(self, qapp, tmp_palace):
-        from PySide6.QtWidgets import QPushButton
-
-        _, panel = self._make_panel(qapp, tmp_palace)
-        btns = panel.findChildren(QPushButton)
-        labels = [b.text() for b in btns]
-        assert any("Open wing in Wake-up" in lbl for lbl in labels)
-
-    def test_has_open_wing_in_compress_button(self, qapp, tmp_palace):
-        from PySide6.QtWidgets import QPushButton
-
-        _, panel = self._make_panel(qapp, tmp_palace)
-        btns = panel.findChildren(QPushButton)
-        labels = [b.text() for b in btns]
-        assert any("Open wing in Compress" in lbl for lbl in labels)
+        secondary = [
+            b
+            for b in btns
+            if b is not panel._more_btn
+            and b is not panel._export_btn
+            and b is not panel._search_btn
+            and b is not panel._show_more_btn
+        ]
+        assert not any(b.text() == "Copy text" for b in secondary)
 
     # -- Action buttons disabled when no hit selected --
 
     def test_action_buttons_disabled_initially(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
-        assert panel._copy_text_btn.isEnabled() is False
-        assert panel._compress_hit_btn.isEnabled() is False
-        assert panel._copy_file_btn.isEnabled() is False
-        assert panel._open_file_btn.isEnabled() is False
-        assert panel._compress_file_btn.isEnabled() is False
-        assert panel._open_wing_wakeup_btn.isEnabled() is False
-        assert panel._open_wing_compress_btn.isEnabled() is False
+        assert panel._export_btn.isEnabled() is False
+        assert panel._more_btn.isEnabled() is False
 
     def test_action_buttons_enabled_on_hit_selection(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
         self._populate_hits(panel)
         panel._on_result_selected(0)
-        assert panel._copy_text_btn.isEnabled() is True
-        assert panel._compress_hit_btn.isEnabled() is True
-        assert panel._copy_file_btn.isEnabled() is True
-        assert panel._open_file_btn.isEnabled() is True
-        assert panel._compress_file_btn.isEnabled() is True
-        assert panel._open_wing_wakeup_btn.isEnabled() is True
-        assert panel._open_wing_compress_btn.isEnabled() is True
+        assert panel._export_btn.isEnabled() is True
+        assert panel._more_btn.isEnabled() is True
 
     def test_action_buttons_disabled_on_invalid_row(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
         self._populate_hits(panel)
         panel._on_result_selected(-1)
-        assert panel._copy_text_btn.isEnabled() is False
+        assert panel._export_btn.isEnabled() is False
+        assert panel._more_btn.isEnabled() is False
 
-    # -- Hit-level copy --
+    # -- Hit-level copy (via method, accessible from More menu) --
 
     def test_copy_text_puts_hit_text_in_clipboard(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
@@ -786,6 +755,22 @@ class TestSearchUsabilityActions:
         _, panel = self._make_panel(qapp, tmp_palace)
         assert panel._results_list.contextMenuPolicy() == Qt.CustomContextMenu
 
+    def test_context_menu_has_primary_action_first(self, qapp, tmp_palace):
+        _, panel = self._make_panel(qapp, tmp_palace)
+        self._populate_hits(panel)
+        panel._on_result_selected(0)
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(panel)
+        menu.addAction("Prepare for new chat", lambda: None)
+        menu.addSeparator()
+        menu.addMenu("Hit")
+        menu.addMenu("File")
+        menu.addSeparator()
+        menu.addMenu("Wing")
+        first_action_text = menu.actions()[0].text()
+        assert "Prepare for new chat" in first_action_text
+
     def test_context_menu_has_scope_submenus(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
         self._populate_hits(panel)
@@ -804,7 +789,7 @@ class TestSearchUsabilityActions:
         wing_menu = menu.addMenu("Wing")
         wing_menu.addAction("Open wing in Wake-up", lambda: None)
         wing_menu.addAction("Open wing in Compress", lambda: None)
-        assert len(menu.actions()) == 4  # Hit menu + File menu + separator + Wing menu
+        assert len(menu.actions()) == 4
 
     # -- Wing-level navigation signals --
 
@@ -825,16 +810,6 @@ class TestSearchUsabilityActions:
         panel._ctrl.navigate_to_compress.connect(lambda w: received.append(w))
         panel._open_wing_in_compress()
         assert received == ["projects"]
-
-    # -- Wing-level buttons use honest labels --
-
-    def test_wing_buttons_say_open_wing(self, qapp, tmp_palace):
-        from PySide6.QtWidgets import QPushButton
-
-        _, panel = self._make_panel(qapp, tmp_palace)
-        wing_btns = [b for b in panel.findChildren(QPushButton) if "wing" in b.text().lower()]
-        labels = [b.text() for b in wing_btns]
-        assert any("Open wing in" in lbl for lbl in labels)
 
     # -- Search semantics unchanged --
 
@@ -857,10 +832,10 @@ class TestSearchUsabilityActions:
         _, panel = self._make_panel(qapp, tmp_palace)
         self._populate_hits(panel)
         panel._on_result_selected(0)
-        assert panel._copy_text_btn.isEnabled() is True
+        assert panel._export_btn.isEnabled() is True
         empty_result = SearchResult(ok=True, query="nothing", hits=[])
         panel._on_search_done(empty_result)
-        assert panel._copy_text_btn.isEnabled() is False
+        assert panel._export_btn.isEnabled() is False
 
     def test_source_path_not_displayed_in_result_list(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
@@ -1263,13 +1238,13 @@ class TestExportBlockUI:
         panel._on_search_done(result)
         return hits
 
-    def test_has_prepare_context_block_button(self, qapp, tmp_palace):
+    def test_has_prepare_for_new_chat_button(self, qapp, tmp_palace):
         from PySide6.QtWidgets import QPushButton
 
         _, panel = self._make_panel(qapp, tmp_palace)
         btns = panel.findChildren(QPushButton)
         labels = [b.text() for b in btns]
-        assert any("Prepare context block" in lbl for lbl in labels)
+        assert any("Prepare for new chat" in lbl for lbl in labels)
 
     def test_export_button_disabled_without_hit(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
@@ -1284,7 +1259,7 @@ class TestExportBlockUI:
     def test_export_button_has_primary_style(self, qapp, tmp_palace):
         _, panel = self._make_panel(qapp, tmp_palace)
         style = panel._export_btn.styleSheet()
-        assert "2563eb" in style or "primary" in style.lower() or "bold" in style
+        assert "2563eb" in style
 
     def test_export_dialog_opens(self, qapp, tmp_palace):
         from gui.main_window import ExportBlockDialog
@@ -1294,7 +1269,7 @@ class TestExportBlockUI:
         panel._on_result_selected(0)
         dlg = ExportBlockDialog(panel._ctrl, hits[0], parent=panel)
         assert dlg is not None
-        assert dlg.windowTitle() == "Prepare context block"
+        assert dlg.windowTitle() == "Prepare for new chat"
 
     def test_export_dialog_has_scope_checkboxes(self, qapp, tmp_palace):
         from gui.main_window import ExportBlockDialog
@@ -1333,7 +1308,7 @@ class TestExportBlockUI:
         from PySide6.QtWidgets import QMenu
 
         menu = QMenu(panel)
-        menu.addAction("Prepare context block", lambda: None)
+        menu.addAction("Prepare for new chat", lambda: None)
         assert len(menu.actions()) == 1
 
     def test_search_semantics_unchanged_with_export(self, qapp, tmp_palace):
