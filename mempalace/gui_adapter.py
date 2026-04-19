@@ -1063,8 +1063,10 @@ class MemPalaceAdapter:
             return SourceFileResult(ok=False, error=str(e))
 
     # ------------------------------------------------------------------
-    # run_export_block — build export block for external chat
+    # run_export_block — canonical technical handoff for external chat
     # ------------------------------------------------------------------
+
+    _RAW_THRESHOLD_TOKENS = 800
 
     def run_export_block(
         self,
@@ -1074,15 +1076,18 @@ class MemPalaceAdapter:
         source_path: str = "",
         wing: str = "",
         room: str = "",
-        include_recap: bool = True,
-        include_wakeup: bool = True,
-        include_aaak: bool = True,
-        include_raw: bool = True,
     ) -> ExportBlockResult:
-        """Build an export block for continuing work in an external chat.
+        """Build a canonical technical handoff block for external chat.
 
-        Composes a single block from available data. Uses existing project
-        logic (Dialect.compress, wake-up) — no new AI engine.
+        One default format — no presets, no toggles. Sections:
+
+        1. Title
+        2. Short intro / handoff line
+        3. Source metadata
+        4. Technical handoff (what this is, what was done, must not break, next step)
+        5. Wake-up section (if wing available)
+        6. AAAK section
+        7. Raw source (full if ≤ threshold, else critical fragments + source ID)
 
         Args:
             scope: One of "hit", "file", "wing".
@@ -1091,10 +1096,6 @@ class MemPalaceAdapter:
             source_path: Full source path for metadata.
             wing: Wing name for metadata and wake-up.
             room: Room name for metadata.
-            include_recap: Include handoff / recap section.
-            include_wakeup: Include wake-up text (wing-level operation).
-            include_aaak: Include AAAK compression of the raw text.
-            include_raw: Include raw source text.
 
         Returns:
             ExportBlockResult with composed block_text.
@@ -1111,93 +1112,60 @@ class MemPalaceAdapter:
         }
         scope_label = scope_labels[scope]
         source_label = source_file or wing or "unknown"
-
+        raw_tokens = max(1, int(len(raw_text) / 3.8))
         lines = []
 
-        # Title
-        lines.append(f"# Context for continuing work — {scope_label}")
+        # 1. Title
+        lines.append(f"# Technical handoff — {scope_label}")
         lines.append("")
 
-        # Intro / handoff
-        lines.append("> This block was prepared from MemPalace for continuing")
-        lines.append("> work in a new chat. Original source material is preserved below.")
+        # 2. Short intro / handoff line
+        lines.append(
+            f"> Continuing work on {scope_label}. "
+            "Original source preserved verbatim below. Do not summarize or paraphrase."
+        )
         lines.append("")
 
-        # Metadata
-        lines.append("## Source metadata")
+        # 3. Source metadata
+        lines.append("## Source")
         meta_parts = [f"- **Scope**: {scope}"]
         if source_file:
-            meta_parts.append(f"- **Source file**: {source_file}")
-        if source_path:
+            meta_parts.append(f"- **File**: {source_file}")
+        if source_path and scope == "file":
             meta_parts.append(f"- **Path**: {source_path}")
         if wing:
             meta_parts.append(f"- **Wing**: {wing}")
         if room:
             meta_parts.append(f"- **Room**: {room}")
-        chars = len(raw_text)
-        toks = max(1, int(chars / 3.8))
-        meta_parts.append(f"- **Size**: ~{toks:,} tokens ({chars:,} chars)")
+        meta_parts.append(f"- **Size**: ~{raw_tokens:,} tokens")
         lines.extend(meta_parts)
         lines.append("")
 
-        # Recap / handoff
-        if include_recap:
-            lines.append("## Handoff")
-            lines.append("")
-            lines.append(
-                "We are continuing work based on previous conversations and files. "
-                "Below is the context needed to pick up where we left off."
-            )
-            lines.append("")
-            lines.append(f"- **What this is**: {scope_label} from '{source_label}'")
-            lines.append(f"- **Wing / topic**: {wing or 'not specified'}")
-            lines.append(f"- **Room**: {room or 'not specified'}")
-            lines.append("- **What already exists**: the raw source below")
-            lines.append("- **What to preserve**: verbatim content, do not summarize or paraphrase")
-            lines.append("")
+        # 4. Technical handoff
+        lines.append("## Handoff")
+        lines.append("")
+        lines.append(f"- **What this is**: {scope_label} from '{source_label}'")
+        lines.append(
+            "- **What was already done**: content below was mined, indexed, "
+            "and retrieved from the palace"
+        )
+        lines.append(
+            "- **What must not be broken**: verbatim text integrity — "
+            "do not paraphrase, do not merge, do not summarize in place of source"
+        )
+        lines.append(
+            "- **Next step**: continue the work that produced this content, "
+            "using the raw source as ground truth"
+        )
+        lines.append("")
 
-        # AAAK section
-        if include_aaak:
-            try:
-                from .dialect import Dialect
-
-                dialect = Dialect()
-                meta = {}
-                if source_file:
-                    meta["source_file"] = source_file
-                if wing:
-                    meta["wing"] = wing
-                if room:
-                    meta["room"] = room
-                compressed = dialect.compress(raw_text, metadata=meta if meta else None)
-                stats = dialect.compression_stats(raw_text, compressed)
-                lines.append("## AAAK Index")
-                lines.append("")
-                lines.append(
-                    f"Compressed: {stats['original_tokens_est']}t "
-                    f"→ {stats['summary_tokens_est']}t "
-                    f"({stats['size_ratio']:.1f}x)"
-                )
-                lines.append("")
-                lines.append("```")
-                lines.append(compressed)
-                lines.append("```")
-                lines.append("")
-            except Exception as e:
-                lines.append("## AAAK Index")
-                lines.append("")
-                lines.append(f"(AAAK generation failed: {e})")
-                lines.append("")
-
-        # Wake-up section
-        if include_wakeup and wing:
+        # 5. Wake-up section
+        if wing:
             try:
                 wakeup = self.run_wakeup(wing=wing)
                 if wakeup.ok and wakeup.text:
                     lines.append("## Wake-up")
-                    lines.append("")
                     lines.append(f"~{wakeup.tokens_est} tokens")
-                    lines.append("")
                     lines.append("```")
                     lines.append(wakeup.text)
                     lines.append("```")
@@ -1205,12 +1173,64 @@ class MemPalaceAdapter:
             except Exception:
                 pass
 
-        # Raw source
-        if include_raw:
-            lines.append("## Raw source")
+        # 6. AAAK section
+        try:
+            from .dialect import Dialect
+
+            dialect = Dialect()
+            meta = {}
+            if source_file:
+                meta["source_file"] = source_file
+            if wing:
+                meta["wing"] = wing
+            if room:
+                meta["room"] = room
+            compressed = dialect.compress(raw_text, metadata=meta if meta else None)
+            stats = dialect.compression_stats(raw_text, compressed)
+            lines.append("## AAAK Index")
+            lines.append(
+                f"{stats['original_tokens_est']}t → {stats['summary_tokens_est']}t "
+                f"({stats['size_ratio']:.1f}x)"
+            )
+            lines.append("```")
+            lines.append(compressed)
+            lines.append("```")
             lines.append("")
+        except Exception as e:
+            lines.append("## AAAK Index")
+            lines.append(f"(AAAK generation failed: {e})")
+            lines.append("")
+
+        # 7. Raw source
+        lines.append("## Raw source")
+        lines.append("")
+        if raw_tokens <= self._RAW_THRESHOLD_TOKENS:
             lines.append(raw_text)
+        else:
+            head_lines = raw_text.split("\n")[:40]
+            tail_lines = raw_text.split("\n")[-10:]
+            head_text = "\n".join(head_lines)
+            tail_text = "\n".join(tail_lines)
+            total_lines = len(raw_text.split("\n"))
+            shown_head = len(head_lines)
+            shown_tail = len(tail_lines)
+            lines.append(head_text)
             lines.append("")
+            lines.append(
+                f"... [{total_lines - shown_head - shown_tail} lines omitted, "
+                f"~{raw_tokens:,} tokens total] ..."
+            )
+            lines.append("")
+            lines.append(tail_text)
+            lines.append("")
+            if source_path and scope == "file":
+                lines.append(f"Full source: {source_path}")
+            elif wing:
+                lines.append(
+                    f"Full source available in palace wing '{wing}' — use Search or Mine to access"
+                )
+
+        lines.append("")
 
         return ExportBlockResult(
             ok=True,

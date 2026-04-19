@@ -107,7 +107,7 @@ _PRIMARY_BTN_STYLE = (
 
 
 class ExportBlockDialog(QDialog):
-    """Dialog for building and exporting a context block for external chat."""
+    """Dialog for building a canonical technical handoff block for external chat."""
 
     def __init__(self, controller: QtController, hit: SearchHit, parent=None):
         super().__init__(parent)
@@ -126,7 +126,7 @@ class ExportBlockDialog(QDialog):
         root.setSpacing(10)
         root.setContentsMargins(20, 20, 20, 20)
 
-        root.addWidget(_label("Prepare context block for external chat", bold=True))
+        root.addWidget(_label("Technical handoff for external chat", bold=True))
         root.addWidget(_hline())
 
         # Scope selection
@@ -144,25 +144,8 @@ class ExportBlockDialog(QDialog):
         scope_lay.addWidget(self._scope_wing_rb)
         root.addWidget(scope_grp)
 
-        # Section toggles
-        sec_grp = QGroupBox("Include sections")
-        sec_lay = QHBoxLayout(sec_grp)
-        self._recap_cb = QCheckBox("Handoff / recap")
-        self._recap_cb.setChecked(True)
-        self._wakeup_cb = QCheckBox("Wake-up")
-        self._wakeup_cb.setChecked(True)
-        self._aaak_cb = QCheckBox("AAAK index")
-        self._aaak_cb.setChecked(True)
-        self._raw_cb = QCheckBox("Raw source")
-        self._raw_cb.setChecked(True)
-        sec_lay.addWidget(self._recap_cb)
-        sec_lay.addWidget(self._wakeup_cb)
-        sec_lay.addWidget(self._aaak_cb)
-        sec_lay.addWidget(self._raw_cb)
-        root.addWidget(sec_grp)
-
         # Generate button
-        self._gen_btn = QPushButton("Generate block")
+        self._gen_btn = QPushButton("Generate handoff")
         self._gen_btn.setFixedHeight(36)
         self._gen_btn.setStyleSheet(_PRIMARY_BTN_STYLE)
         self._gen_btn.clicked.connect(self._generate)
@@ -255,10 +238,6 @@ class ExportBlockDialog(QDialog):
             source_path=self._hit.source_path if self._scope == "file" else "",
             wing=self._hit.wing,
             room=self._hit.room,
-            include_recap=self._recap_cb.isChecked(),
-            include_wakeup=self._wakeup_cb.isChecked(),
-            include_aaak=self._aaak_cb.isChecked(),
-            include_raw=self._raw_cb.isChecked(),
         )
 
     @Slot(object)

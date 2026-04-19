@@ -296,10 +296,6 @@ class _ExportBlockWorker(_Worker):
         source_path: str,
         wing: str,
         room: str,
-        include_recap: bool,
-        include_wakeup: bool,
-        include_aaak: bool,
-        include_raw: bool,
         parent=None,
     ):
         super().__init__(parent)
@@ -310,10 +306,6 @@ class _ExportBlockWorker(_Worker):
         self._source_path = source_path
         self._wing = wing
         self._room = room
-        self._include_recap = include_recap
-        self._include_wakeup = include_wakeup
-        self._include_aaak = include_aaak
-        self._include_raw = include_raw
 
     def run(self):
         result = self._adapter.run_export_block(
@@ -323,10 +315,6 @@ class _ExportBlockWorker(_Worker):
             source_path=self._source_path,
             wing=self._wing,
             room=self._room,
-            include_recap=self._include_recap,
-            include_wakeup=self._include_wakeup,
-            include_aaak=self._include_aaak,
-            include_raw=self._include_raw,
         )
         self.finished.emit(result)
 
@@ -580,10 +568,6 @@ class QtController(QObject):
         source_path: str = "",
         wing: str = "",
         room: str = "",
-        include_recap: bool = True,
-        include_wakeup: bool = True,
-        include_aaak: bool = True,
-        include_raw: bool = True,
     ) -> None:
         """Build export block for external chat (non-blocking). Ignores if busy."""
         if self._busy:
@@ -598,10 +582,6 @@ class QtController(QObject):
             source_path,
             wing,
             room,
-            include_recap,
-            include_wakeup,
-            include_aaak,
-            include_raw,
             parent=self,
         )
         w.finished.connect(self._on_export_block_done)

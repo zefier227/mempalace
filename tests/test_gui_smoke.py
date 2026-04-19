@@ -1026,7 +1026,7 @@ class TestCompressTextAndSourceFile:
 
 
 class TestExportBlockAdapter:
-    """Verify gui_adapter.run_export_block() for all 3 scopes."""
+    """Verify gui_adapter.run_export_block() — canonical technical handoff."""
 
     def test_export_block_hit_scope(self, tmp_palace):
         from mempalace.gui_adapter import MemPalaceAdapter, ExportBlockResult
@@ -1089,7 +1089,7 @@ class TestExportBlockAdapter:
         result = adapter.run_export_block(scope="hit", raw_text="")
         assert result.ok is False
 
-    def test_export_block_includes_recap(self, tmp_palace):
+    def test_export_block_always_includes_handoff(self, tmp_palace):
         from mempalace.gui_adapter import MemPalaceAdapter
 
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
@@ -1097,31 +1097,11 @@ class TestExportBlockAdapter:
             scope="hit",
             raw_text="Some work text",
             wing="projects",
-            include_recap=True,
-            include_wakeup=False,
-            include_aaak=False,
-            include_raw=False,
         )
         assert result.ok
         assert "Handoff" in result.block_text
 
-    def test_export_block_omits_recap(self, tmp_palace):
-        from mempalace.gui_adapter import MemPalaceAdapter
-
-        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
-        result = adapter.run_export_block(
-            scope="hit",
-            raw_text="Some work text",
-            wing="projects",
-            include_recap=False,
-            include_wakeup=False,
-            include_aaak=False,
-            include_raw=False,
-        )
-        assert result.ok
-        assert "Handoff" not in result.block_text
-
-    def test_export_block_includes_aaak(self, tmp_palace):
+    def test_export_block_always_includes_aaak(self, tmp_palace):
         from mempalace.gui_adapter import MemPalaceAdapter
 
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
@@ -1129,15 +1109,11 @@ class TestExportBlockAdapter:
             scope="hit",
             raw_text="We decided to use GraphQL for the API design",
             wing="projects",
-            include_recap=False,
-            include_wakeup=False,
-            include_aaak=True,
-            include_raw=False,
         )
         assert result.ok
         assert "AAAK" in result.block_text
 
-    def test_export_block_includes_raw_source(self, tmp_palace):
+    def test_export_block_always_includes_raw_source(self, tmp_palace):
         from mempalace.gui_adapter import MemPalaceAdapter
 
         adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
@@ -1145,10 +1121,6 @@ class TestExportBlockAdapter:
             scope="hit",
             raw_text="This is the raw verbatim content",
             wing="projects",
-            include_recap=False,
-            include_wakeup=False,
-            include_aaak=False,
-            include_raw=True,
         )
         assert result.ok
         assert "This is the raw verbatim content" in result.block_text
@@ -1162,7 +1134,6 @@ class TestExportBlockAdapter:
             scope="hit",
             raw_text="Exact user words that must not be paraphrased or summarized",
             wing="projects",
-            include_raw=True,
         )
         assert result.ok
         assert "Exact user words that must not be paraphrased or summarized" in result.block_text
@@ -1193,7 +1164,7 @@ class TestExportBlockAdapter:
             wing="projects",
         )
         assert result.ok
-        assert "Context for continuing work" in result.block_text
+        assert "Technical handoff" in result.block_text
 
     def test_export_block_has_handoff_text(self, tmp_palace):
         from mempalace.gui_adapter import MemPalaceAdapter
@@ -1203,10 +1174,62 @@ class TestExportBlockAdapter:
             scope="hit",
             raw_text="Some text",
             wing="projects",
-            include_recap=True,
         )
         assert result.ok
         assert "continuing work" in result.block_text.lower()
+
+    def test_export_block_has_what_must_not_break(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="Some text",
+            wing="projects",
+        )
+        assert result.ok
+        assert "must not" in result.block_text.lower() or "must not be broken" in result.block_text.lower()
+
+    def test_export_block_has_next_step(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text="Some text",
+            wing="projects",
+        )
+        assert result.ok
+        assert "next step" in result.block_text.lower()
+
+    def test_export_block_truncates_large_source(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        large_text = "Line content here.\n" * 2000
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text=large_text,
+            source_file="big.md",
+            wing="projects",
+        )
+        assert result.ok
+        assert "lines omitted" in result.block_text
+        assert "Raw source" in result.block_text
+
+    def test_export_block_includes_full_small_source(self, tmp_palace):
+        from mempalace.gui_adapter import MemPalaceAdapter
+
+        adapter = MemPalaceAdapter(palace_path=str(tmp_palace))
+        small_text = "Short fragment of text"
+        result = adapter.run_export_block(
+            scope="hit",
+            raw_text=small_text,
+            wing="projects",
+        )
+        assert result.ok
+        assert small_text in result.block_text
+        assert "lines omitted" not in result.block_text
 
 
 class TestExportBlockUI:
@@ -1281,16 +1304,16 @@ class TestExportBlockUI:
         assert hasattr(dlg, "_scope_file_rb")
         assert hasattr(dlg, "_scope_wing_rb")
 
-    def test_export_dialog_has_section_checkboxes(self, qapp, tmp_palace):
+    def test_export_dialog_has_no_section_toggles(self, qapp, tmp_palace):
         from gui.main_window import ExportBlockDialog
 
         _, panel = self._make_panel(qapp, tmp_palace)
         hits = self._populate_hits(panel)
         dlg = ExportBlockDialog(panel._ctrl, hits[0], parent=panel)
-        assert hasattr(dlg, "_recap_cb")
-        assert hasattr(dlg, "_wakeup_cb")
-        assert hasattr(dlg, "_aaak_cb")
-        assert hasattr(dlg, "_raw_cb")
+        assert not hasattr(dlg, "_recap_cb")
+        assert not hasattr(dlg, "_wakeup_cb")
+        assert not hasattr(dlg, "_aaak_cb")
+        assert not hasattr(dlg, "_raw_cb")
 
     def test_export_dialog_has_copy_and_save(self, qapp, tmp_palace):
         from gui.main_window import ExportBlockDialog
